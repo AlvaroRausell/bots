@@ -12,11 +12,19 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+type AgentFormat string
+
+const (
+	FormatStandard AgentFormat = "standard"
+	FormatOpenCode AgentFormat = "opencode"
+)
+
 type Agent struct {
 	Name          string
 	Description   string
 	ConfigDir     string
 	ConfigFile    string
+	Format        AgentFormat
 	AgentPresent  bool
 	MCPConfigured bool
 	Selected      bool
@@ -38,8 +46,9 @@ func getAgents() []Agent {
 		{
 			Name:         "opencode",
 			Description:  "OpenCode AI agent",
-			ConfigDir:    filepath.Join(homeDir, ".opencode"),
-			ConfigFile:   filepath.Join(homeDir, ".opencode", "mcp.json"),
+			ConfigDir:    filepath.Join(homeDir, ".config", "opencode"),
+			ConfigFile:   filepath.Join(homeDir, ".config", "opencode", "opencode.json"),
+			Format:       FormatOpenCode,
 			AgentPresent: false,
 			Selected:     true,
 		},
@@ -48,6 +57,7 @@ func getAgents() []Agent {
 			Description:  "Claude Code (Anthropic)",
 			ConfigDir:    filepath.Join(homeDir, ".claude"),
 			ConfigFile:   filepath.Join(homeDir, ".claude", "mcp.json"),
+			Format:       FormatStandard,
 			AgentPresent: false,
 			Selected:     false,
 		},
@@ -56,6 +66,7 @@ func getAgents() []Agent {
 			Description:  "OpenAI Codex",
 			ConfigDir:    filepath.Join(homeDir, ".codex"),
 			ConfigFile:   filepath.Join(homeDir, ".codex", "mcp.json"),
+			Format:       FormatStandard,
 			AgentPresent: false,
 			Selected:     false,
 		},
@@ -67,16 +78,27 @@ func getAgents() []Agent {
 		}
 		agents[i].AgentPresent = agents[i].AgentPresent || commandExists(agents[i].Name)
 
-		agents[i].MCPConfigured = isBotsMCPConfigured(agents[i].ConfigFile)
+		agents[i].MCPConfigured = isBotsMCPConfigured(agents[i].ConfigFile, agents[i].Format)
 	}
 
 	return agents
 }
 
-func isBotsMCPConfigured(configFile string) bool {
+func isBotsMCPConfigured(configFile string, format AgentFormat) bool {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return false
+	}
+
+	if format == FormatOpenCode {
+		var config struct {
+			MCP map[string]json.RawMessage `json:"mcp"`
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			return false
+		}
+		_, exists := config.MCP["bots"]
+		return exists
 	}
 
 	var config struct {
@@ -250,7 +272,7 @@ func installMCP(agents []Agent) tea.Cmd {
 				continue
 			}
 
-			if err := installToAgent(agent.ConfigFile, execPath); err != nil {
+			if err := installToAgent(agent.ConfigFile, execPath, agent.Format); err != nil {
 				failed = append(failed, fmt.Sprintf("%s: %v", agent.Name, err))
 			} else {
 				installed = append(installed, agent.Name)
@@ -278,10 +300,14 @@ func installMCP(agents []Agent) tea.Cmd {
 	}
 }
 
-func installToAgent(configPath string, execPath string) error {
+func installToAgent(configPath string, execPath string, format AgentFormat) error {
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
+	}
+
+	if format == FormatOpenCode {
+		return installToOpenCode(configPath, execPath)
 	}
 
 	existing := make(map[string]struct {
@@ -320,6 +346,63 @@ func installToAgent(configPath string, execPath string) error {
 	}
 
 	jsonData, err := json.MarshalIndent(mcpConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	return nil
+}
+
+func installToOpenCode(configPath string, execPath string) error {
+	existing := make(map[string]json.RawMessage)
+
+	data, err := os.ReadFile(configPath)
+	if err == nil {
+		var parsed map[string]json.RawMessage
+		if json.Unmarshal(data, &parsed) == nil {
+			existing = parsed
+		}
+	}
+
+	type openCodeMCPServer struct {
+		Type    string   `json:"type"`
+		Command []string `json:"command"`
+	}
+
+	mcpServers := make(map[string]openCodeMCPServer)
+
+	if rawMcp, ok := existing["mcp"]; ok {
+		var parsed struct {
+			Servers map[string]openCodeMCPServer `json:"mcp"`
+		}
+		if json.Unmarshal([]byte(`{"mcp":`+string(rawMcp)+`}`), &parsed) == nil {
+			mcpServers = parsed.Servers
+		}
+	}
+
+	mcpServers["bots"] = openCodeMCPServer{
+		Type:    "local",
+		Command: []string{execPath, "mcp", "serve"},
+	}
+
+	mcpJSON, err := json.MarshalIndent(mcpServers, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal mcp config: %w", err)
+	}
+
+	config := make(map[string]json.RawMessage)
+	for k, v := range existing {
+		if k != "mcp" {
+			config[k] = v
+		}
+	}
+	config["mcp"] = json.RawMessage(mcpJSON)
+
+	jsonData, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}

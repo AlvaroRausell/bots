@@ -31,7 +31,7 @@ func TestIsBotsMCPConfigured_NoFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "mcp.json")
 
-	if isBotsMCPConfigured(configFile) {
+	if isBotsMCPConfigured(configFile, FormatStandard) {
 		t.Error("expected false when config file does not exist")
 	}
 }
@@ -41,7 +41,7 @@ func TestIsBotsMCPConfigured_EmptyFile(t *testing.T) {
 	configFile := filepath.Join(tmpDir, "mcp.json")
 	os.WriteFile(configFile, []byte(""), 0644)
 
-	if isBotsMCPConfigured(configFile) {
+	if isBotsMCPConfigured(configFile, FormatStandard) {
 		t.Error("expected false for empty config file")
 	}
 }
@@ -61,7 +61,7 @@ func TestIsBotsMCPConfigured_NoBotsEntry(t *testing.T) {
 	data, _ := json.MarshalIndent(config, "", "  ")
 	os.WriteFile(configFile, data, 0644)
 
-	if isBotsMCPConfigured(configFile) {
+	if isBotsMCPConfigured(configFile, FormatStandard) {
 		t.Error("expected false when bots entry does not exist")
 	}
 }
@@ -81,8 +81,48 @@ func TestIsBotsMCPConfigured_BotsEntryExists(t *testing.T) {
 	data, _ := json.MarshalIndent(config, "", "  ")
 	os.WriteFile(configFile, data, 0644)
 
-	if !isBotsMCPConfigured(configFile) {
+	if !isBotsMCPConfigured(configFile, FormatStandard) {
 		t.Error("expected true when bots entry exists")
+	}
+}
+
+func TestIsBotsMCPConfigured_OpenCodeNoBotsEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "opencode.json")
+
+	config := map[string]interface{}{
+		"mcp": map[string]interface{}{
+			"other-server": map[string]interface{}{
+				"type":    "local",
+				"command": []string{"other", "serve"},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(config, "", "  ")
+	os.WriteFile(configFile, data, 0644)
+
+	if isBotsMCPConfigured(configFile, FormatOpenCode) {
+		t.Error("expected false when bots entry does not exist in opencode format")
+	}
+}
+
+func TestIsBotsMCPConfigured_OpenCodeBotsEntryExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "opencode.json")
+
+	config := map[string]interface{}{
+		"mcp": map[string]interface{}{
+			"bots": map[string]interface{}{
+				"type":    "local",
+				"command": []string{"/usr/local/bin/bots", "mcp", "serve"},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(config, "", "  ")
+	os.WriteFile(configFile, data, 0644)
+
+	if !isBotsMCPConfigured(configFile, FormatOpenCode) {
+		t.Error("expected true when bots entry exists in opencode format")
 	}
 }
 
@@ -90,7 +130,7 @@ func TestInstallToAgent_CreatesNewConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "mcp.json")
 
-	err := installToAgent(configFile, "/usr/local/bin/bots")
+	err := installToAgent(configFile, "/usr/local/bin/bots", FormatStandard)
 	if err != nil {
 		t.Fatalf("installToAgent failed: %v", err)
 	}
@@ -140,7 +180,7 @@ func TestInstallToAgent_MergesWithExistingConfig(t *testing.T) {
 	existingData, _ := json.MarshalIndent(existingConfig, "", "  ")
 	os.WriteFile(configFile, existingData, 0644)
 
-	err := installToAgent(configFile, "/usr/local/bin/bots")
+	err := installToAgent(configFile, "/usr/local/bin/bots", FormatStandard)
 	if err != nil {
 		t.Fatalf("installToAgent failed: %v", err)
 	}
@@ -185,7 +225,7 @@ func TestInstallToAgent_OverwritesExistingBotsEntry(t *testing.T) {
 	existingData, _ := json.MarshalIndent(existingConfig, "", "  ")
 	os.WriteFile(configFile, existingData, 0644)
 
-	err := installToAgent(configFile, "/new/path/bots")
+	err := installToAgent(configFile, "/new/path/bots", FormatStandard)
 	if err != nil {
 		t.Fatalf("installToAgent failed: %v", err)
 	}
@@ -221,7 +261,7 @@ func TestInstallToAgent_CreatesConfigDir(t *testing.T) {
 	configDir := filepath.Join(tmpDir, "subdir", "nested")
 	configFile := filepath.Join(configDir, "mcp.json")
 
-	err := installToAgent(configFile, "/usr/local/bin/bots")
+	err := installToAgent(configFile, "/usr/local/bin/bots", FormatStandard)
 	if err != nil {
 		t.Fatalf("installToAgent failed: %v", err)
 	}
@@ -237,7 +277,7 @@ func TestInstallToAgent_InvalidJSONExisting(t *testing.T) {
 
 	os.WriteFile(configFile, []byte("not valid json{{{"), 0644)
 
-	err := installToAgent(configFile, "/usr/local/bin/bots")
+	err := installToAgent(configFile, "/usr/local/bin/bots", FormatStandard)
 	if err != nil {
 		t.Fatalf("installToAgent should handle invalid JSON gracefully, got: %v", err)
 	}
@@ -533,5 +573,93 @@ func TestCommandExists_InvalidCommand(t *testing.T) {
 func TestCommandExists_ValidCommand(t *testing.T) {
 	if !commandExists("ls") {
 		t.Error("expected true for 'ls' command")
+	}
+}
+
+func TestInstallToAgent_OpenCodeCreatesNewConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "opencode.json")
+
+	err := installToAgent(configFile, "/usr/local/bin/bots", FormatOpenCode)
+	if err != nil {
+		t.Fatalf("installToAgent failed: %v", err)
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("failed to read config file: %v", err)
+	}
+
+	var config struct {
+		MCP map[string]struct {
+			Type    string   `json:"type"`
+			Command []string `json:"command"`
+		} `json:"mcp"`
+	}
+
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatalf("failed to parse config JSON: %v", err)
+	}
+
+	botsEntry, ok := config.MCP["bots"]
+	if !ok {
+		t.Fatal("bots entry not found in opencode config")
+	}
+
+	if botsEntry.Type != "local" {
+		t.Errorf("expected type 'local', got '%s'", botsEntry.Type)
+	}
+
+	if len(botsEntry.Command) != 3 || botsEntry.Command[0] != "/usr/local/bin/bots" || botsEntry.Command[1] != "mcp" || botsEntry.Command[2] != "serve" {
+		t.Errorf("expected command ['/usr/local/bin/bots', 'mcp', 'serve'], got %v", botsEntry.Command)
+	}
+}
+
+func TestInstallToAgent_OpenCodeMergesWithExistingConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "opencode.json")
+
+	existingConfig := map[string]interface{}{
+		"$schema": "https://opencode.ai/config.json",
+		"mcp": map[string]interface{}{
+			"existing-server": map[string]interface{}{
+				"type":    "remote",
+				"url":     "https://example.com/mcp",
+				"enabled": true,
+			},
+		},
+	}
+	existingData, _ := json.MarshalIndent(existingConfig, "", "  ")
+	os.WriteFile(configFile, existingData, 0644)
+
+	err := installToAgent(configFile, "/usr/local/bin/bots", FormatOpenCode)
+	if err != nil {
+		t.Fatalf("installToAgent failed: %v", err)
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("failed to read config file: %v", err)
+	}
+
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatalf("failed to parse config JSON: %v", err)
+	}
+
+	if _, ok := config["$schema"]; !ok {
+		t.Error("existing top-level keys were lost after merge")
+	}
+
+	var mcp map[string]interface{}
+	if err := json.Unmarshal(config["mcp"], &mcp); err != nil {
+		t.Fatalf("failed to parse mcp JSON: %v", err)
+	}
+
+	if _, ok := mcp["existing-server"]; !ok {
+		t.Error("existing 'existing-server' entry was lost after merge")
+	}
+	if _, ok := mcp["bots"]; !ok {
+		t.Error("bots entry not found after merge")
 	}
 }
