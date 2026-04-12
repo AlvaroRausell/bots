@@ -12,64 +12,82 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Agent represents an AI agent that can use MCP servers
 type Agent struct {
-	Name        string
-	Description string
-	ConfigDir   string
-	Installed   bool
-	Selected    bool
+	Name          string
+	Description   string
+	ConfigDir     string
+	ConfigFile    string
+	AgentPresent  bool
+	MCPConfigured bool
+	Selected      bool
 }
 
-// Model represents the TUI state
 type Model struct {
 	agents     []Agent
 	cursor     int
 	installing bool
 	done       bool
 	message    string
+	width      int
 }
 
-// Available agents
 func getAgents() []Agent {
 	homeDir, _ := os.UserHomeDir()
 
 	agents := []Agent{
 		{
-			Name:        "opencode",
-			Description: "OpenCode AI agent",
-			ConfigDir:   filepath.Join(homeDir, ".opencode"),
-			Installed:   false,
-			Selected:    true,
+			Name:         "opencode",
+			Description:  "OpenCode AI agent",
+			ConfigDir:    filepath.Join(homeDir, ".opencode"),
+			ConfigFile:   filepath.Join(homeDir, ".opencode", "mcp.json"),
+			AgentPresent: false,
+			Selected:     true,
 		},
 		{
-			Name:        "claude",
-			Description: "Claude Code (Anthropic)",
-			ConfigDir:   filepath.Join(homeDir, ".claude"),
-			Installed:   false,
-			Selected:    false,
+			Name:         "claude",
+			Description:  "Claude Code (Anthropic)",
+			ConfigDir:    filepath.Join(homeDir, ".claude"),
+			ConfigFile:   filepath.Join(homeDir, ".claude", "mcp.json"),
+			AgentPresent: false,
+			Selected:     false,
 		},
 		{
-			Name:        "codex",
-			Description: "OpenAI Codex",
-			ConfigDir:   filepath.Join(homeDir, ".codex"),
-			Installed:   false,
-			Selected:    false,
+			Name:         "codex",
+			Description:  "OpenAI Codex",
+			ConfigDir:    filepath.Join(homeDir, ".codex"),
+			ConfigFile:   filepath.Join(homeDir, ".codex", "mcp.json"),
+			AgentPresent: false,
+			Selected:     false,
 		},
 	}
 
-	// Check which agents are installed
 	for i := range agents {
-		// Check if config dir exists
 		if _, err := os.Stat(agents[i].ConfigDir); err == nil {
-			agents[i].Installed = true
+			agents[i].AgentPresent = true
 		}
+		agents[i].AgentPresent = agents[i].AgentPresent || commandExists(agents[i].Name)
 
-		// Also check if the agent CLI exists
-		agents[i].Installed = agents[i].Installed || commandExists(agents[i].Name)
+		agents[i].MCPConfigured = isBotsMCPConfigured(agents[i].ConfigFile)
 	}
 
 	return agents
+}
+
+func isBotsMCPConfigured(configFile string) bool {
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return false
+	}
+
+	var config struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return false
+	}
+
+	_, exists := config.MCPServers["bots"]
+	return exists
 }
 
 func commandExists(cmd string) bool {
@@ -77,7 +95,6 @@ func commandExists(cmd string) bool {
 	return err == nil
 }
 
-// Initial model creation
 func InitialModel() Model {
 	return Model{
 		agents:     getAgents(),
@@ -85,25 +102,26 @@ func InitialModel() Model {
 		installing: false,
 		done:       false,
 		message:    "",
+		width:      60,
 	}
 }
 
-// Init returns the initial command
 func (m Model) Init() tea.Cmd {
 	return nil
 }
 
-// Update handles messages
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.done {
-		if msg, ok := msg.(tea.KeyMsg); ok && msg.Type == tea.KeyCtrlC {
-			return m, tea.Quit
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			switch keyMsg.String() {
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			}
 		}
 		return m, nil
 	}
 
 	if m.installing {
-		// Check for completion message
 		if _, ok := msg.(installResultMsg); ok {
 			m.done = true
 		}
@@ -111,9 +129,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c":
+		case "ctrl+c", "q":
 			return m, tea.Quit
 
 		case "up", "k":
@@ -132,6 +152,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "i", "I":
+			anySelected := false
+			for _, a := range m.agents {
+				if a.Selected {
+					anySelected = true
+					break
+				}
+			}
+			if !anySelected {
+				return m, nil
+			}
 			m.installing = true
 			return m, installMCP(m.agents)
 		}
@@ -140,12 +170,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the UI
 func (m Model) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("🤖 Bots MCP Installer\n\n"))
-	b.WriteString(subtitleStyle.Render("Select agents to configure with MCP server\n\n"))
+	b.WriteString(titleStyle.Render("Bots MCP Installer"))
+	b.WriteString("\n\n")
+	b.WriteString(subtitleStyle.Render("Select agents to configure with the bots MCP server"))
+	b.WriteString("\n\n")
 
 	for i, agent := range m.agents {
 		cursor := "  "
@@ -159,60 +190,67 @@ func (m Model) View() string {
 		}
 
 		status := ""
-		if agent.Installed {
-			status = installedStyle.Render(" (installed)")
+		if agent.MCPConfigured {
+			status = configuredStyle.Render(" ✓ configured")
+		} else if agent.AgentPresent {
+			status = agentPresentStyle.Render(" ● available")
+		} else {
+			status = notFoundStyle.Render(" ✗ not found")
 		}
 
-		line := fmt.Sprintf("%s%s %s%s%s\n",
-			cursor,
-			checkbox,
-			agentStyle.Render(agent.Name),
-			status,
-			descStyle.Render(" - "+agent.Description))
+		line := fmt.Sprintf("%s%s %s%s\n", cursor, checkbox, agentStyle.Render(agent.Name), status)
 		b.WriteString(line)
+
+		pathLine := fmt.Sprintf("    %s\n", pathStyle.Render(agent.ConfigFile))
+		b.WriteString(pathLine)
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("\n↑/j ↓/k: Navigate  •  Space/Enter: Toggle  •  i: Install  •  Ctrl+C: Quit\n\n"))
+	b.WriteString(helpStyle.Render("↑/k ↓/j Navigate • Space/Enter Toggle • i Install • q/Ctrl+C Quit"))
+	b.WriteString("\n\n")
 
 	if m.installing && !m.done {
-		b.WriteString(installingStyle.Render("⏳ Installing MCP server...\n\n"))
+		b.WriteString(installingStyle.Render("⏳ Installing MCP server..."))
+		b.WriteString("\n\n")
 	}
 
 	if m.message != "" {
-		b.WriteString(m.message + "\n")
+		b.WriteString(m.message)
+		b.WriteString("\n")
 	}
 
 	if m.done {
-		b.WriteString(successStyle.Render("✅ Installation complete! Press Ctrl+C to exit.\n"))
+		b.WriteString(successStyle.Render("Installation complete! Press q or Ctrl+C to exit."))
+		b.WriteString("\n")
 	}
 
 	return b.String()
 }
 
-// Message types
 type installResultMsg string
 
-// Install command
 func installMCP(agents []Agent) tea.Cmd {
 	return func() tea.Msg {
-		// Get the current executable path
 		execPath, err := os.Executable()
 		if err != nil {
 			return installResultMsg(fmt.Sprintf("Error getting executable: %v", err))
 		}
 
-		// Install to selected agents
 		var installed []string
 		var failed []string
+		var skipped []string
 
 		for _, agent := range agents {
 			if !agent.Selected {
 				continue
 			}
 
-			configPath := filepath.Join(agent.ConfigDir, "mcp.json")
-			if err := installToAgent(configPath, execPath); err != nil {
+			if agent.MCPConfigured {
+				skipped = append(skipped, agent.Name)
+				continue
+			}
+
+			if err := installToAgent(agent.ConfigFile, execPath); err != nil {
 				failed = append(failed, fmt.Sprintf("%s: %v", agent.Name, err))
 			} else {
 				installed = append(installed, agent.Name)
@@ -221,11 +259,18 @@ func installMCP(agents []Agent) tea.Cmd {
 
 		var result string
 		if len(installed) > 0 {
-			result += fmt.Sprintf("✅ Successfully installed to: %s\n\n", strings.Join(installed, ", "))
+			result += successStyle.Render(fmt.Sprintf("Installed to: %s", strings.Join(installed, ", ")))
+			result += "\n"
+		}
+		if len(skipped) > 0 {
+			result += configuredStyle.Render(fmt.Sprintf("Already configured: %s", strings.Join(skipped, ", ")))
+			result += "\n"
 		}
 		if len(failed) > 0 {
-			result += fmt.Sprintf("❌ Failed:\n  %s", strings.Join(failed, "\n  "))
-		} else {
+			result += failStyle.Render(fmt.Sprintf("Failed:\n  %s", strings.Join(failed, "\n  ")))
+			result += "\n"
+		}
+		if len(installed) > 0 {
 			result += "\nRestart your AI agent to use the MCP server."
 		}
 
@@ -234,31 +279,46 @@ func installMCP(agents []Agent) tea.Cmd {
 }
 
 func installToAgent(configPath string, execPath string) error {
-	// Create config directory if it doesn't exist
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
 	}
 
-	// Create MCP config struct
+	existing := make(map[string]struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	})
+
+	data, err := os.ReadFile(configPath)
+	if err == nil {
+		var parsed struct {
+			MCPServers map[string]struct {
+				Command string   `json:"command"`
+				Args    []string `json:"args"`
+			} `json:"mcpServers"`
+		}
+		if json.Unmarshal(data, &parsed) == nil && parsed.MCPServers != nil {
+			existing = parsed.MCPServers
+		}
+	}
+
+	existing["bots"] = struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}{
+		Command: execPath,
+		Args:    []string{"mcp", "serve"},
+	}
+
 	mcpConfig := struct {
 		MCPServers map[string]struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
 		} `json:"mcpServers"`
 	}{
-		MCPServers: map[string]struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
-		}{
-			"bots": {
-				Command: execPath,
-				Args:    []string{"mcp", "serve"},
-			},
-		},
+		MCPServers: existing,
 	}
 
-	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(mcpConfig, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -271,12 +331,10 @@ func installToAgent(configPath string, execPath string) error {
 	return nil
 }
 
-// Styles
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205")).
-			Align(lipgloss.Center)
+			Foreground(lipgloss.Color("205"))
 
 	subtitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
@@ -288,17 +346,23 @@ var (
 			Foreground(lipgloss.Color("82"))
 
 	agentStyle = lipgloss.NewStyle().
-			Bold(true)
+			Bold(true).
+			Foreground(lipgloss.Color("252"))
 
-	descStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
+	pathStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("243"))
 
-	installedStyle = lipgloss.NewStyle().
+	configuredStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("82"))
 
+	agentPresentStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214"))
+
+	notFoundStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("203"))
+
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			Italic(true)
+			Foreground(lipgloss.Color("241"))
 
 	installingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214"))
@@ -306,11 +370,13 @@ var (
 	successStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("82"))
+
+	failStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("203"))
 )
 
-// Run starts the installer TUI
 func Run() {
-	p := tea.NewProgram(InitialModel())
+	p := tea.NewProgram(InitialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running installer: %v\n", err)
 		os.Exit(1)
