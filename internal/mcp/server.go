@@ -4,23 +4,65 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+
+	"bots/internal/checkpoint"
+	"bots/internal/log"
+	"bots/internal/task"
 )
 
 // Serve starts the MCP server on stdio
 func Serve() {
-	reader := os.Stdin
-	decoder := json.NewDecoder(reader)
+	decoder := json.NewDecoder(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 
-	// Send initialization response
-	initResponse := map[string]interface{}{
+	for {
+		var message map[string]interface{}
+		if err := decoder.Decode(&message); err != nil {
+			if err == io.EOF {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+			continue
+		}
+
+		method, ok := message["method"].(string)
+		if !ok {
+			sendError(encoder, -32600, "Invalid Request", nil)
+			continue
+		}
+
+		id := message["id"]
+
+		switch method {
+		case "initialize":
+			sendInitializeResponse(encoder, id)
+		case "notifications/initialized":
+			continue
+		case "tools/list":
+			handleToolsList(encoder, id)
+		case "tools/call":
+			params, ok := message["params"].(map[string]interface{})
+			if !ok {
+				sendError(encoder, -32602, "Invalid params", id)
+				continue
+			}
+			handleToolsCall(encoder, id, params)
+		default:
+			sendError(encoder, -32601, "Method not found", id)
+		}
+	}
+}
+
+func sendInitializeResponse(encoder *json.Encoder, id interface{}) {
+	response := map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      1,
+		"id":      id,
 		"result": map[string]interface{}{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": "2025-11-25",
 			"capabilities": map[string]interface{}{
 				"tools": map[string]interface{}{
 					"listChanged": true,
@@ -32,44 +74,7 @@ func Serve() {
 			},
 		},
 	}
-	encoder.Encode(initResponse)
-
-	// Process messages
-	for {
-		var message map[string]interface{}
-		if err := decoder.Decode(&message); err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
-			continue
-		}
-
-		method, ok := message["method"].(string)
-		if !ok {
-			sendError(encoder, -32600, "Invalid Request", message["id"])
-			continue
-		}
-
-		id := message["id"]
-
-		switch method {
-		case "tools/list":
-			handleToolsList(encoder, id)
-		case "tools/call":
-			params, ok := message["params"].(map[string]interface{})
-			if !ok {
-				sendError(encoder, -32602, "Invalid params", id)
-				continue
-			}
-			handleToolsCall(encoder, id, params)
-		case "initialize":
-			// Already sent init response, ignore
-			continue
-		case "notifications/initialized":
-			// Ignore notification
-			continue
-		default:
-			sendError(encoder, -32601, "Method not found", id)
-		}
-	}
+	encoder.Encode(response)
 }
 
 func handleToolsList(encoder *json.Encoder, id interface{}) {
@@ -268,7 +273,14 @@ func handleToolsCall(encoder *json.Encoder, id interface{}, params map[string]in
 		return
 	}
 
-	arguments, _ := params["arguments"].(map[string]interface{})
+	arguments, ok := params["arguments"].(map[string]interface{})
+	if !ok {
+		arguments = make(map[string]interface{})
+	}
+
+	missingArg := func(argName string) {
+		sendToolError(encoder, id, fmt.Sprintf("Missing required argument: %s", argName))
+	}
 
 	switch name {
 	case "checkpoint_read":
@@ -277,6 +289,10 @@ func handleToolsCall(encoder *json.Encoder, id interface{}, params map[string]in
 	case "checkpoint_update":
 		section, _ := arguments["section"].(string)
 		content, _ := arguments["content"].(string)
+		if section == "" {
+			missingArg("section")
+			return
+		}
 		result := executeCheckpointUpdate(section, content)
 		sendSuccess(encoder, id, result)
 	case "checkpoint_list":
@@ -284,19 +300,39 @@ func handleToolsCall(encoder *json.Encoder, id interface{}, params map[string]in
 		sendSuccess(encoder, id, result)
 	case "log_create":
 		topic, _ := arguments["topic"].(string)
+		if topic == "" {
+			missingArg("topic")
+			return
+		}
 		result := executeLogCreate(topic)
 		sendSuccess(encoder, id, result)
 	case "log_append":
 		slug, _ := arguments["slug"].(string)
 		message, _ := arguments["message"].(string)
+		if slug == "" {
+			missingArg("slug")
+			return
+		}
+		if message == "" {
+			missingArg("message")
+			return
+		}
 		result := executeLogAppend(slug, message)
 		sendSuccess(encoder, id, result)
 	case "log_search":
 		query, _ := arguments["query"].(string)
+		if query == "" {
+			missingArg("query")
+			return
+		}
 		result := executeLogSearch(query)
 		sendSuccess(encoder, id, result)
 	case "log_summarize":
 		slug, _ := arguments["slug"].(string)
+		if slug == "" {
+			missingArg("slug")
+			return
+		}
 		result := executeLogSummarize(slug)
 		sendSuccess(encoder, id, result)
 	case "log_list":
@@ -304,176 +340,166 @@ func handleToolsCall(encoder *json.Encoder, id interface{}, params map[string]in
 		sendSuccess(encoder, id, result)
 	case "task_create":
 		slug, _ := arguments["slug"].(string)
+		if slug == "" {
+			missingArg("slug")
+			return
+		}
 		result := executeTaskCreate(slug)
 		sendSuccess(encoder, id, result)
 	case "task_read":
 		slug, _ := arguments["slug"].(string)
+		if slug == "" {
+			missingArg("slug")
+			return
+		}
 		result := executeTaskRead(slug)
 		sendSuccess(encoder, id, result)
 	case "task_update_status":
 		slug, _ := arguments["slug"].(string)
 		status, _ := arguments["status"].(string)
+		if slug == "" {
+			missingArg("slug")
+			return
+		}
+		if status == "" {
+			missingArg("status")
+			return
+		}
 		result := executeTaskUpdateStatus(slug, status)
 		sendSuccess(encoder, id, result)
 	case "git_commit_checkpoint":
 		message, _ := arguments["message"].(string)
+		if message == "" {
+			missingArg("message")
+			return
+		}
 		result := executeGitCommitCheckpoint(message)
 		sendSuccess(encoder, id, result)
 	case "git_branch_info":
 		result := executeGitBranchInfo()
 		sendSuccess(encoder, id, result)
 	default:
-		sendError(encoder, -32602, "Unknown tool: "+name, id)
+		sendToolError(encoder, id, "Unknown tool: "+name)
 	}
 }
 
-// Tool execution wrappers that call the CLI
-
-func runCLICommand(args ...string) (string, error) {
-	// Get the path to the bots binary
-	execPath, err := os.Executable()
-	if err != nil {
-		// Fallback to "bots" in PATH
-		execPath = "bots"
-	}
-
-	cmd := exec.Command(execPath, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
-	if err != nil {
-		return stderr.String(), err
-	}
-
-	return stdout.String(), nil
-}
+// Tool execution wrappers that call internal packages directly.
+// This avoids argument-splitting issues that would occur when passing
+// multi-word content through CLI subprocess args.
 
 func executeCheckpointRead() string {
-	output, err := runCLICommand("checkpoint", "read")
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	checkpoint.ReadTo(&buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeCheckpointUpdate(section, content string) string {
-	output, err := runCLICommand("checkpoint", "update", section, content)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	checkpoint.UpdateTo(section, content, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeCheckpointList() string {
-	output, err := runCLICommand("checkpoint", "list")
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	checkpoint.ListTo(&buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeLogCreate(topic string) string {
-	output, err := runCLICommand("log", "start", topic)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	log.StartLogTo(topic, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeLogAppend(slug, message string) string {
-	output, err := runCLICommand("log", "append", slug, message)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	log.AppendEntryTo(slug, message, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeLogSearch(query string) string {
-	output, err := runCLICommand("log", "search", query)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	log.SearchLogsTo(query, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeLogSummarize(slug string) string {
-	output, err := runCLICommand("log", "summarize", slug)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	log.SummarizeLogTo(slug, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeLogList() string {
-	output, err := runCLICommand("log", "list")
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	log.ListLogsTo(&buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeTaskCreate(slug string) string {
-	output, err := runCLICommand("task", "create", slug)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	task.CreateTo(slug, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeTaskRead(slug string) string {
-	output, err := runCLICommand("task", "read", slug)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	task.ReadTo(slug, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeTaskUpdateStatus(slug, status string) string {
-	output, err := runCLICommand("task", "update", slug, status)
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	return strings.TrimSpace(output)
+	var buf strings.Builder
+	task.UpdateStatusTo(slug, status, &buf)
+	return strings.TrimSpace(buf.String())
 }
 
 func executeGitCommitCheckpoint(message string) string {
-	// Check if we're in a git repo
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return "Not in a git repository"
 	}
 
-	// Stage .bots directory
-	if err := exec.Command("git", "add", ".bots").Run(); err != nil {
-		return fmt.Sprintf("Error staging: %v", err)
+	cmd = exec.Command("git", "add", ".bots")
+	stderr.Reset()
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Sprintf("Error staging: %v\n%s", err, stderr.String())
 	}
 
-	// Commit
-	if err := exec.Command("git", "commit", "-m", message).Run(); err != nil {
-		return fmt.Sprintf("Error committing: %v", err)
+	cmd = exec.Command("git", "commit", "-m", message)
+	var commitStdout, commitStderr bytes.Buffer
+	cmd.Stdout = &commitStdout
+	cmd.Stderr = &commitStderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Sprintf("Error committing: %v\n%s", err, commitStderr.String())
 	}
 
 	return "Committed checkpoint changes successfully"
 }
 
 func executeGitBranchInfo() string {
-	// Get current branch
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	var branchStderr bytes.Buffer
+	cmd.Stderr = &branchStderr
 	output, err := cmd.Output()
 	if err != nil {
 		return "Not in a git repository"
 	}
 	branch := strings.TrimSpace(string(output))
 
-	// Get current commit
 	cmd = exec.Command("git", "rev-parse", "--short", "HEAD")
+	var commitStderr bytes.Buffer
+	cmd.Stderr = &commitStderr
 	output, err = cmd.Output()
 	if err != nil {
 		return branch
 	}
 	commit := strings.TrimSpace(string(output))
+
+	_ = branchStderr
+	_ = commitStderr
 
 	return fmt.Sprintf("Branch: %s, Commit: %s", branch, commit)
 }
@@ -489,6 +515,24 @@ func sendSuccess(encoder *json.Encoder, id interface{}, content string) {
 					"text": content,
 				},
 			},
+			"isError": false,
+		},
+	}
+	encoder.Encode(response)
+}
+
+func sendToolError(encoder *json.Encoder, id interface{}, message string) {
+	response := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result": map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": message,
+				},
+			},
+			"isError": true,
 		},
 	}
 	encoder.Encode(response)

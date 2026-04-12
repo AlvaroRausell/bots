@@ -31,6 +31,11 @@ type Agent struct {
 	Selected      bool
 }
 
+// NOTE: This code uses bubbletea v1 API (tea.KeyMsg, tea.KeyUp, etc.).
+// When upgrading to bubbletea v2, tea.KeyMsg becomes tea.KeyPressMsg,
+// tea.KeyUp becomes tea.KeyPressMsg{Code: tea.KeyUp}, etc.
+// The key matching (msg.String()) and tea.Quit remain the same.
+
 type Model struct {
 	agents     []Agent
 	cursor     int

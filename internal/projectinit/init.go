@@ -9,12 +9,17 @@ import (
 
 // Initialize creates the .bots directory structure for a new project
 func Initialize(projectName string) {
-	// Create directory structure
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
+		os.Exit(1)
+	}
+
 	dirs := []string{
-		".bots",
-		".bots/logs",
-		".bots/tasks",
-		".bots/skills/session-persistence",
+		filepath.Join(wd, ".bots"),
+		filepath.Join(wd, ".bots", "logs"),
+		filepath.Join(wd, ".bots", "tasks"),
+		filepath.Join(wd, ".bots", "skills", "session-persistence"),
 	}
 
 	for _, dir := range dirs {
@@ -76,7 +81,8 @@ func Initialize(projectName string) {
 ---
 `, projectName, projectName, time.Now().Format("2006-01-02"))
 
-	if err := os.WriteFile(".bots/CHECKPOINTS.md", []byte(checkpointContent), 0644); err != nil {
+	checkpointPath := filepath.Join(wd, ".bots", "CHECKPOINTS.md")
+	if err := os.WriteFile(checkpointPath, []byte(checkpointContent), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating CHECKPOINTS.md: %v\n", err)
 		os.Exit(1)
 	}
@@ -109,15 +115,16 @@ func Initialize(projectName string) {
 
 `
 
-	if err := os.WriteFile(".bots/RULES.md", []byte(rulesContent), 0644); err != nil {
+	rulesPath := filepath.Join(wd, ".bots", "RULES.md")
+	if err := os.WriteFile(rulesPath, []byte(rulesContent), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating RULES.md: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Create .gitkeep files in empty directories
 	gitkeepFiles := []string{
-		".bots/logs/.gitkeep",
-		".bots/tasks/.gitkeep",
+		filepath.Join(wd, ".bots", "logs", ".gitkeep"),
+		filepath.Join(wd, ".bots", "tasks", ".gitkeep"),
 	}
 
 	for _, file := range gitkeepFiles {

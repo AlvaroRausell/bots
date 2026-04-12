@@ -2,25 +2,32 @@ package task
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
-// Create creates a new task file with the given slug
 func Create(slug string) {
+	var buf strings.Builder
+	CreateTo(slug, &buf)
+	fmt.Print(buf.String())
+}
+
+func CreateTo(slug string, w io.Writer) {
+	slug = sanitizeSlug(slug)
 	tasksDir := getTasksDir()
 	filename := fmt.Sprintf("%s.md", slug)
-	filepath := filepath.Join(tasksDir, filename)
+	fp := filepath.Join(tasksDir, filename)
 
-	// Check if file already exists
-	if _, err := os.Stat(filepath); err == nil {
-		fmt.Fprintf(os.Stderr, "Task file already exists: %s\n", filename)
-		os.Exit(1)
+	if _, err := os.Stat(fp); err == nil {
+		fmt.Fprintf(w, "Error: Task file already exists: %s\n", filename)
+		return
 	}
 
-	// Create the file with template
 	content := fmt.Sprintf(`# %s
 
 ## Description
@@ -45,38 +52,42 @@ PENDING
 ---
 `, slug)
 
-	if err := os.WriteFile(filepath, []byte(content), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating task file: %v\n", err)
-		os.Exit(1)
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		fmt.Fprintf(w, "Error creating task file: %v\n", err)
+		return
 	}
 
-	fmt.Printf("Created task file: %s\n", filename)
-	fmt.Println("Edit the file to add description, acceptance criteria, and constraints")
-	fmt.Println("Use 'bots task update <slug> IN_PROGRESS' to start working")
+	fmt.Fprintf(w, "Created task file: %s\n", filename)
+	fmt.Fprintln(w, "Edit the file to add description, acceptance criteria, and constraints")
+	fmt.Fprintln(w, "Use 'bots task update <slug> IN_PROGRESS' to start working")
 }
 
-// Read reads and displays the task file content
 func Read(slug string) {
+	var buf strings.Builder
+	ReadTo(slug, &buf)
+	fmt.Print(buf.String())
+}
+
+func ReadTo(slug string, w io.Writer) {
 	tasksDir := getTasksDir()
 	filename := findTaskFile(slug)
 
 	if filename == "" {
-		fmt.Fprintf(os.Stderr, "No task file found for slug: %s\n", slug)
-		fmt.Fprintln(os.Stderr, "Use 'bots task list' to see available tasks")
-		os.Exit(1)
+		fmt.Fprintf(w, "No task file found for slug: %s\n", slug)
+		fmt.Fprintln(w, "Use 'bots task list' to see available tasks")
+		return
 	}
 
-	filepath := filepath.Join(tasksDir, filename)
-	content, err := os.ReadFile(filepath)
+	fp := filepath.Join(tasksDir, filename)
+	content, err := os.ReadFile(fp)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading task file: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(w, "Error reading task file: %v\n", err)
+		return
 	}
 
-	fmt.Println(string(content))
+	fmt.Fprintln(w, string(content))
 }
 
-// Status reads and displays only the status section
 func Status(slug string) {
 	tasksDir := getTasksDir()
 	filename := findTaskFile(slug)
@@ -86,8 +97,8 @@ func Status(slug string) {
 		os.Exit(1)
 	}
 
-	filepath := filepath.Join(tasksDir, filename)
-	content, err := os.ReadFile(filepath)
+	fp := filepath.Join(tasksDir, filename)
+	content, err := os.ReadFile(fp)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading task file: %v\n", err)
 		os.Exit(1)
@@ -121,17 +132,21 @@ func Status(slug string) {
 	}
 }
 
-// UpdateStatus updates the status of a task file
 func UpdateStatus(slug string, newStatus string) {
+	var buf strings.Builder
+	UpdateStatusTo(slug, newStatus, &buf)
+	fmt.Print(buf.String())
+}
+
+func UpdateStatusTo(slug string, newStatus string, w io.Writer) {
 	tasksDir := getTasksDir()
 	filename := findTaskFile(slug)
 
 	if filename == "" {
-		fmt.Fprintf(os.Stderr, "No task file found for slug: %s\n", slug)
-		os.Exit(1)
+		fmt.Fprintf(w, "No task file found for slug: %s\n", slug)
+		return
 	}
 
-	// Validate status
 	validStatuses := []string{"PENDING", "IN_PROGRESS", "READY_FOR_REVIEW", "CHANGES_REQUESTED", "DONE"}
 	valid := false
 	for _, validStatus := range validStatuses {
@@ -143,16 +158,16 @@ func UpdateStatus(slug string, newStatus string) {
 	}
 
 	if !valid {
-		fmt.Fprintf(os.Stderr, "Invalid status: %s\n", newStatus)
-		fmt.Fprintf(os.Stderr, "Valid statuses: %s\n", strings.Join(validStatuses, ", "))
-		os.Exit(1)
+		fmt.Fprintf(w, "Invalid status: %s\n", newStatus)
+		fmt.Fprintf(w, "Valid statuses: %s\n", strings.Join(validStatuses, ", "))
+		return
 	}
 
-	filepath := filepath.Join(tasksDir, filename)
-	content, err := os.ReadFile(filepath)
+	fp := filepath.Join(tasksDir, filename)
+	content, err := os.ReadFile(fp)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading task file: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(w, "Error reading task file: %v\n", err)
+		return
 	}
 
 	lines := strings.Split(string(content), "\n")
@@ -168,10 +183,8 @@ func UpdateStatus(slug string, newStatus string) {
 		}
 
 		if inStatusSection {
-			// Check if we've reached the next section or end of status block
 			if strings.HasPrefix(line, "## ") || strings.TrimSpace(line) == "---" {
 				if !statusReplaced {
-					// Insert status before we leave the section
 					newLines = append(newLines, newStatus)
 					newLines = append(newLines, "")
 					newLines = append(newLines, "---")
@@ -184,13 +197,11 @@ func UpdateStatus(slug string, newStatus string) {
 				continue
 			}
 
-			// Skip the old status line
 			if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "---") {
 				continue
 			}
 		}
 
-		// Handle case where status is at end of file
 		if i == len(lines)-1 && inStatusSection && !statusReplaced {
 			newLines = append(newLines, newStatus)
 			newLines = append(newLines, "")
@@ -204,12 +215,9 @@ func UpdateStatus(slug string, newStatus string) {
 		}
 	}
 
-	// Handle case where status section was empty
 	if !statusReplaced {
-		// Find and insert in the status section
 		for i, line := range newLines {
 			if strings.TrimSpace(line) == "## Status" && i+1 < len(newLines) {
-				// Insert after the header
 				newLines = append(newLines[:i+1], append([]string{newStatus, "", "---"}, newLines[i+1:]...)...)
 				statusReplaced = true
 				break
@@ -218,37 +226,41 @@ func UpdateStatus(slug string, newStatus string) {
 	}
 
 	if !statusReplaced {
-		fmt.Fprintf(os.Stderr, "Could not find status section in task file\n")
-		os.Exit(1)
+		fmt.Fprintln(w, "Could not find status section in task file")
+		return
 	}
 
-	if err := os.WriteFile(filepath, []byte(strings.Join(newLines, "\n")), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing task file: %v\n", err)
-		os.Exit(1)
+	if err := os.WriteFile(fp, []byte(strings.Join(newLines, "\n")), 0644); err != nil {
+		fmt.Fprintf(w, "Error writing task file: %v\n", err)
+		return
 	}
 
-	fmt.Printf("Updated task %s status to: %s\n", slug, newStatus)
+	fmt.Fprintf(w, "Updated task %s status to: %s\n", slug, newStatus)
 
-	// Add context-specific message
 	switch newStatus {
 	case "IN_PROGRESS":
-		fmt.Println("Task started. Remember to log decisions with 'bots log append'")
+		fmt.Fprintln(w, "Task started. Remember to log decisions with 'bots log append'")
 	case "READY_FOR_REVIEW":
-		fmt.Println("Task ready for review. Master model will review and update status.")
+		fmt.Fprintln(w, "Task ready for review. Master model will review and update status.")
 	case "DONE":
-		fmt.Println("Task completed and approved!")
+		fmt.Fprintln(w, "Task completed and approved!")
 	case "CHANGES_REQUESTED":
-		fmt.Println("Changes requested. Address feedback and mark READY_FOR_REVIEW when done.")
+		fmt.Fprintln(w, "Changes requested. Address feedback and mark READY_FOR_REVIEW when done.")
 	}
 }
 
-// List lists all task files
 func List() {
+	var buf strings.Builder
+	ListTo(&buf)
+	fmt.Print(buf.String())
+}
+
+func ListTo(w io.Writer) {
 	tasksDir := getTasksDir()
 	files, err := os.ReadDir(tasksDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading tasks directory: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(w, "Error reading tasks directory: %v\n", err)
+		return
 	}
 
 	type TaskInfo struct {
@@ -267,7 +279,6 @@ func List() {
 				continue
 			}
 
-			// Read status
 			status := readTaskStatus(filepath.Join(tasksDir, file.Name()))
 			tasks = append(tasks, TaskInfo{
 				Slug:     slug,
@@ -278,31 +289,23 @@ func List() {
 	}
 
 	if len(tasks) == 0 {
-		fmt.Println("No task files found")
-		fmt.Println("Use 'bots task create <slug>' to create one")
+		fmt.Fprintln(w, "No task files found")
+		fmt.Fprintln(w, "Use 'bots task create <slug>' to create one")
 		return
 	}
 
-	// Sort by modification time (newest first)
-	for i := 0; i < len(tasks)-1; i++ {
-		for j := i + 1; j < len(tasks); j++ {
-			if tasks[i].Modified.Before(tasks[j].Modified) {
-				tasks[i], tasks[j] = tasks[j], tasks[i]
-			}
-		}
-	}
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].Modified.After(tasks[j].Modified)
+	})
 
-	fmt.Println("Task files:")
+	fmt.Fprintln(w, "Task files:")
 	for _, task := range tasks {
 		statusIcon := getStatusIcon(task.Status)
-		fmt.Printf("  %s %s (%s)\n", statusIcon, task.Slug, task.Modified.Format("2006-01-02"))
+		fmt.Fprintf(w, "  %s %s (%s)\n", statusIcon, task.Slug, task.Modified.Format("2006-01-02"))
 	}
 }
 
-// Helper functions
-
 func getTasksDir() string {
-	// Look for .bots/tasks in current directory or parents
 	dir, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
@@ -318,7 +321,6 @@ func getTasksDir() string {
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			// Reached root, create default structure
 			defaultTasksDir := ".bots/tasks"
 			if err := os.MkdirAll(defaultTasksDir, 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating tasks directory: %v\n", err)
@@ -340,7 +342,16 @@ func findTaskFile(slug string) string {
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
 			baseName := strings.TrimSuffix(file.Name(), ".md")
-			if baseName == slug || strings.Contains(baseName, slug) {
+			if baseName == slug {
+				return file.Name()
+			}
+		}
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
+			baseName := strings.TrimSuffix(file.Name(), ".md")
+			if strings.Contains(baseName, slug) {
 				return file.Name()
 			}
 		}
@@ -349,8 +360,8 @@ func findTaskFile(slug string) string {
 	return ""
 }
 
-func readTaskStatus(filepath string) string {
-	content, err := os.ReadFile(filepath)
+func readTaskStatus(fp string) string {
+	content, err := os.ReadFile(fp)
 	if err != nil {
 		return "UNKNOWN"
 	}
@@ -393,4 +404,23 @@ func getStatusIcon(status string) string {
 	default:
 		return "?"
 	}
+}
+
+var slugRegex = regexp.MustCompile(`[^a-z0-9._-]`)
+var multiHyphenRegex = regexp.MustCompile(`-+`)
+
+func sanitizeSlug(slug string) string {
+	slug = strings.ToLower(slug)
+	slug = strings.ReplaceAll(slug, " ", "-")
+	slug = strings.ReplaceAll(slug, ".", "-")
+	slug = slugRegex.ReplaceAllString(slug, "")
+	slug = multiHyphenRegex.ReplaceAllString(slug, "-")
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		slug = "task"
+	}
+	if strings.HasPrefix(slug, "-") {
+		slug = strings.TrimPrefix(slug, "-")
+	}
+	return slug
 }
