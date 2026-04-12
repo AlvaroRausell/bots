@@ -368,26 +368,27 @@ func installToOpenCode(configPath string, execPath string) error {
 		}
 	}
 
-	type openCodeMCPServer struct {
-		Type    string   `json:"type"`
-		Command []string `json:"command"`
-	}
-
-	mcpServers := make(map[string]openCodeMCPServer)
+	mcpServers := make(map[string]json.RawMessage)
 
 	if rawMcp, ok := existing["mcp"]; ok {
-		var parsed struct {
-			Servers map[string]openCodeMCPServer `json:"mcp"`
-		}
-		if json.Unmarshal([]byte(`{"mcp":`+string(rawMcp)+`}`), &parsed) == nil {
-			mcpServers = parsed.Servers
+		var parsed map[string]json.RawMessage
+		if json.Unmarshal(rawMcp, &parsed) == nil {
+			mcpServers = parsed
 		}
 	}
 
-	mcpServers["bots"] = openCodeMCPServer{
+	botsEntry := struct {
+		Type    string   `json:"type"`
+		Command []string `json:"command"`
+	}{
 		Type:    "local",
 		Command: []string{execPath, "mcp", "serve"},
 	}
+	botsJSON, err := json.Marshal(botsEntry)
+	if err != nil {
+		return fmt.Errorf("failed to marshal bots entry: %w", err)
+	}
+	mcpServers["bots"] = json.RawMessage(botsJSON)
 
 	mcpJSON, err := json.MarshalIndent(mcpServers, "", "  ")
 	if err != nil {

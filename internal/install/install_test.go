@@ -663,3 +663,56 @@ func TestInstallToAgent_OpenCodeMergesWithExistingConfig(t *testing.T) {
 		t.Error("bots entry not found after merge")
 	}
 }
+
+func TestInstallToAgent_OpenCodePreservesRemoteEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "opencode.json")
+
+	existingConfig := map[string]interface{}{
+		"$schema": "https://opencode.ai/config.json",
+		"mcp": map[string]interface{}{
+			"context7": map[string]interface{}{
+				"type":    "remote",
+				"url":     "https://mcp.context7.com/mcp",
+				"enabled": true,
+				"headers": map[string]interface{}{
+					"CONTEXT7_API_KEY": "test-key",
+				},
+			},
+		},
+	}
+	existingData, _ := json.MarshalIndent(existingConfig, "", "  ")
+	os.WriteFile(configFile, existingData, 0644)
+
+	err := installToAgent(configFile, "/usr/local/bin/bots", FormatOpenCode)
+	if err != nil {
+		t.Fatalf("installToAgent failed: %v", err)
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("failed to read config file: %v", err)
+	}
+
+	var config struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatalf("failed to parse config JSON: %v", err)
+	}
+
+	var context7 map[string]interface{}
+	if err := json.Unmarshal(config.MCP["context7"], &context7); err != nil {
+		t.Fatalf("failed to parse context7 entry: %v", err)
+	}
+
+	if context7["type"] != "remote" {
+		t.Errorf("expected context7 type 'remote', got '%v'", context7["type"])
+	}
+	if context7["url"] != "https://mcp.context7.com/mcp" {
+		t.Errorf("expected context7 url preserved, got '%v'", context7["url"])
+	}
+	if _, ok := context7["headers"]; !ok {
+		t.Error("context7 headers were lost after merge")
+	}
+}
