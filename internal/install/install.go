@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -300,6 +301,17 @@ func installMCP(agents []Agent) tea.Cmd {
 	}
 }
 
+func backupConfig(configPath string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+
+	ts := time.Now().UnixNano()
+	backupPath := fmt.Sprintf("%s.bak.%d", configPath, ts)
+	return os.WriteFile(backupPath, data, 0644)
+}
+
 func installToAgent(configPath string, execPath string, format AgentFormat) error {
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -317,6 +329,9 @@ func installToAgent(configPath string, execPath string, format AgentFormat) erro
 
 	data, err := os.ReadFile(configPath)
 	if err == nil {
+		if err := backupConfig(configPath); err != nil {
+			return fmt.Errorf("failed to backup config: %w", err)
+		}
 		var parsed struct {
 			MCPServers map[string]struct {
 				Command string   `json:"command"`
@@ -362,6 +377,9 @@ func installToOpenCode(configPath string, execPath string) error {
 
 	data, err := os.ReadFile(configPath)
 	if err == nil {
+		if backupErr := backupConfig(configPath); backupErr != nil {
+			return fmt.Errorf("failed to backup config: %w", backupErr)
+		}
 		var parsed map[string]json.RawMessage
 		if json.Unmarshal(data, &parsed) == nil {
 			existing = parsed
