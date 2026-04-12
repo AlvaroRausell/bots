@@ -6,11 +6,11 @@ A CLI tool and MCP server for maintaining living project documentation, session 
 
 **Bots** provides a structured system for AI agents to:
 
-- 📍 **Track project state** in `.bots/CHECKPOINTS.md` - a living document that evolves with your project
-- 📝 **Log decisions** in per-session markdown files under `.bots/logs/`
-- 🔄 **Hand off tasks** between master/slave models with a structured review protocol
-- 🔌 **Integrate with AI agents** via MCP (Model Context Protocol) for programmatic access
-- 📊 **Link to git** for commit tracking and branch management
+- **Track project state** in `.bots/CHECKPOINTS.md` - a living document that evolves with your project
+- **Log decisions** in per-session markdown files under `.bots/logs/`
+- **Hand off tasks** between master/slave models with a structured review protocol
+- **Integrate with AI agents** via MCP (Model Context Protocol) for programmatic access
+- **Link to git** for commit tracking and branch management
 
 Inspired by the living document pattern used in projects like [guia](https://github.com/AlvaroRausell/guia), where `README.md` serves as an evolving project plan with decision logs.
 
@@ -243,6 +243,8 @@ bots git_commit_checkpoint "Add user authentication"
 ```
 
 ### Task Handoff Protocol
+
+This protocol is particularly useful for splitting planning and execution between models. For example, an expensive, highly capable model (like Opus 4.6, running on claude code) can be used to plan the task and review the results, while a cheaper model (running via a harness like opencode) performs the actual code writing.
 
 **Master model creates task:**
 
