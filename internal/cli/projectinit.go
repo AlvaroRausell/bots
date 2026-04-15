@@ -30,11 +30,15 @@ Usage:
   bots init <project-name>
 
 Initializes a new project with the .bots directory structure:
+  - .bots/AGENTS.md         # AI agent instructions
   - .bots/CHECKPOINTS.md    # Living project state document
-  - .bots/RULES.md          # Project rules and constraints
   - .bots/logs/             # Session decision logs
   - .bots/tasks/            # Task handoff files
   - .bots/skills/           # AI agent skills
+
+Also creates root-level entry points:
+  - AGENTS.md               # Points to .bots/AGENTS.md
+  - CLAUDE.md               # Points to AGENTS.md
 
 The project name is used to create an initial checkpoint entry.
 
