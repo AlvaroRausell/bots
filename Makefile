@@ -1,5 +1,7 @@
 .PHONY: build test clean install help dev
 
+GOBIN ?= $(HOME)/.local/bin
+
 # Build the bots CLI
 build:
 	go build -o bots ./cmd/bots
@@ -10,7 +12,8 @@ test:
 
 # Install to system PATH
 install:
-	go install ./cmd/bots
+	mkdir -p "$(GOBIN)"
+	GOBIN="$(GOBIN)" go install ./cmd/bots
 
 # Clean build artifacts
 clean:
@@ -50,7 +53,7 @@ help:
 	@echo "Usage:"
 	@echo "  make build       Build the bots CLI"
 	@echo "  make test        Run tests"
-	@echo "  make install     Install to GOPATH/bin"
+	@echo "  make install     Install to $(GOBIN)"
 	@echo "  make clean       Remove build artifacts"
 	@echo "  make install-mcp Run interactive MCP installer"
 	@echo "  make mcp         Start MCP server"

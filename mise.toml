@@ -1,2 +1,7 @@
 [tools]
 go = "latest"
+
+[settings]
+# Keep `go install` outputs in the normal Go bin directory so `bots`
+# remains runnable outside this repo when using mise-managed Go.
+go_set_gobin = false

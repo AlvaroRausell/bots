@@ -86,8 +86,15 @@ go build -o bots ./cmd/bots
 ### Add to PATH
 
 ```bash
-make install  # Installs to $GOPATH/bin
+make install                    # Installs to ~/.local/bin by default
+make install GOBIN=$HOME/bin    # Override the install directory
 ```
+
+### Note for mise users
+
+This repository sets `go_set_gobin = false` in `mise.toml` so `go install ./cmd/bots`
+installs to the normal Go bin directory (`$GOPATH/bin`, usually `~/go/bin`) instead of a
+version-specific mise shim path. That keeps `bots` runnable outside this repo too.
 
 ## Usage
 
@@ -205,7 +212,7 @@ When configured, AI agents can access these tools:
 ```bash
 make build       # Build the CLI
 make test        # Run tests
-make install     # Install to GOPATH/bin
+make install     # Install to ~/.local/bin (default)
 make clean       # Remove build artifacts
 make install-mcp # Run interactive installer
 make mcp         # Start MCP server
