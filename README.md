@@ -39,8 +39,8 @@ Inspired by the living document pattern used in projects like [guia](https://git
 ```
 project/
 ├── .bots/
-│   ├── CHECKPOINTS.md          # Current project state (living doc)
-│   ├── RULES.md                # Project constraints
+│   ├── AGENTS.md               # AI agent instructions
+│   ├── CHECKPOINTS.md          # Current project state + startup checklist
 │   ├── logs/                   # Session decision logs
 │   │   └── 2026-04-12-api-design.md
 │   ├── tasks/                  # Task handoff files
@@ -58,10 +58,12 @@ project/
 
 ### Workflow
 
-1. **Agent starts session** → Creates session log, reads checkpoint
-2. **Agent makes decisions** → Logs each decision with rationale
-3. **Agent completes work** → Updates checkpoint, commits changes
-4. **Next session** → New agent reads checkpoint + logs for context
+1. **Agent initializes project context** → Reads checkpoint and completes the startup checklist
+2. **Agent plans the work** → Defines project phases before implementation
+3. **Agent starts session** → Creates session log once planning is current
+4. **Agent makes decisions** → Logs each decision with rationale
+5. **Agent completes work** → Updates checkpoint, commits changes
+6. **Next session** → New agent reads checkpoint + logs for context
 
 ## Installation
 
@@ -121,11 +123,14 @@ bots init help
 ```
 
 This creates:
-- `.bots/CHECKPOINTS.md` - Living project state document
-- `.bots/RULES.md` - Project rules and constraints
+- `.bots/AGENTS.md` - AI agent instructions
+- `.bots/CHECKPOINTS.md` - Living project state document with a startup checklist
 - `.bots/logs/` - Session decision logs
 - `.bots/tasks/` - Task handoff files
 - `.bots/skills/` - AI agent skills
+
+Before the first log is created, fill the startup checklist in `.bots/CHECKPOINTS.md`
+and define the project phases.
 
 #### Checkpoints
 
@@ -141,6 +146,8 @@ bots checkpoint list
 ```
 
 #### Session Logs
+
+Start session logs after the startup checklist and project phases are current.
 
 ```bash
 # Start a new session log
@@ -229,12 +236,17 @@ make help        # Show help
 
 ```bash
 bots init "my-app"
+
+# Then fill .bots/CHECKPOINTS.md before starting work:
+# - complete the Project Startup Checklist
+# - define the Project Phases
 ```
 
 ### Starting a New Feature
 
 ```bash
-# Start session for new feature
+# Make sure planning is current in .bots/CHECKPOINTS.md first
+# Then start a session for the feature
 bots log start "user-auth"
 
 # Work session - decisions logged in real-time
@@ -321,13 +333,14 @@ The skill document tells AI agents how to use this system. See `.bots/skills/ses
 
 ## Best Practices
 
-1. **Log decisions in real-time** - Don't wait until session end
-2. **Be specific** - Include rationale, not just what was decided
-3. **Link to files** - Reference specific paths when relevant
-4. **Update checkpoints incrementally** - Keep state current
-5. **Use task handoff for complex work** - Simple fixes don't need full protocol
-6. **One session per log** - Keep logs atomic for easy navigation
-7. **Commit checkpoints frequently** - Track state changes in git
+1. **Plan first** - Complete the startup checklist and define project phases before the first work session
+2. **Log decisions in real-time** - Don't wait until session end
+3. **Be specific** - Include rationale, not just what was decided
+4. **Link to files** - Reference specific paths when relevant
+5. **Update checkpoints incrementally** - Keep state current
+6. **Use task handoff for complex work** - Simple fixes don't need full protocol
+7. **One session per log** - Keep logs atomic for easy navigation
+8. **Commit checkpoints frequently** - Track state changes in git
 
 ## Development
 

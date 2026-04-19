@@ -31,10 +31,15 @@ Usage:
 
 Initializes a new project with the .bots directory structure:
   - .bots/AGENTS.md         # AI agent instructions
-  - .bots/CHECKPOINTS.md    # Living project state document
+  - .bots/CHECKPOINTS.md    # Living project state + startup checklist
   - .bots/logs/             # Session decision logs
   - .bots/tasks/            # Task handoff files
   - .bots/skills/           # AI agent skills
+
+The generated checkpoint requires planning first:
+  - Fill the Project Startup Checklist
+  - Define Project Phases
+  - Then start the first session log
 
 Also creates root-level entry points:
   - AGENTS.md               # Points to .bots/AGENTS.md

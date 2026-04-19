@@ -90,10 +90,11 @@ func Initialize(projectName string) {
 	fmt.Println("  CLAUDE.md              - Root pointer to AGENTS.md")
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  1. Edit .bots/CHECKPOINTS.md to add project details")
-	fmt.Println("  2. Edit .bots/AGENTS.md to add project-specific rules")
-	fmt.Println("  3. Start your first session: bots log start \"<topic>\"")
-	fmt.Println("  4. Run 'bots install' to configure MCP for your AI agent")
+	fmt.Println("  1. Fill out the Project Startup Checklist in .bots/CHECKPOINTS.md")
+	fmt.Println("  2. Define your Project Phases before starting implementation work")
+	fmt.Println("  3. Edit .bots/AGENTS.md to add project-specific rules")
+	fmt.Println("  4. Start your first session only after planning is current: bots log start \"<topic>\"")
+	fmt.Println("  5. Run 'bots install' to configure MCP for your AI agent")
 }
 
 func createCheckpointContent(projectName, date string) string {
@@ -108,7 +109,20 @@ func createCheckpointContent(projectName, date string) string {
 - **Project**: %s
 - **Started**: %s
 - **Last session log**: None yet
-- **Status**: Project initialized
+- **Status**: Planning required before first work session
+
+---
+
+## Project Startup Checklist
+
+> Complete this checklist before starting the first implementation or logging session.
+
+- [ ] Project goal and desired outcome are clearly defined
+- [ ] Scope and non-goals are documented
+- [ ] Project stages/phases are listed in the Project Phases section
+- [ ] Initial acceptance criteria or definition of done are captured
+- [ ] Risks, dependencies, and open questions are documented
+- [ ] Initial tasks have been outlined in `+"`.bots/tasks/`"+` if work is ready to begin
 
 ---
 
@@ -116,13 +130,14 @@ func createCheckpointContent(projectName, date string) string {
 
 | Phase | Description | Status | Started | Completed |
 |-------|-------------|--------|---------|-----------|
-| 1     | Project setup | [ ] | - | - |
+| 1     | Planning and stage definition | [ ] | - | - |
+| 2     | Project setup | [ ] | - | - |
 
 ---
 
 ## Key Decisions
 
-*No decisions recorded yet. Start logging with `+"`"+`bots log append`+"`"+`*
+*No decisions recorded yet. Start logging with `+"`"+`bots log append`+"`"+` after the startup checklist is complete.*
 
 ---
 
@@ -158,8 +173,10 @@ Before doing anything, read:
 ### Before Starting Work
 
 1. Read ` + "`.bots/CHECKPOINTS.md`" + ` for current project state
-2. Check ` + "`.bots/logs/`" + ` for recent session context
-3. Start a new session log: ` + "`bots log start <topic>`" + `
+2. Complete or update the ` + "`Project Startup Checklist`" + ` before beginning a new project or major initiative
+3. Define or revise the ` + "`Project Phases`" + ` so the stages are clear before implementation
+4. Review ` + "`.bots/logs/`" + ` and ` + "`.bots/tasks/`" + ` for recent context when they exist
+5. Start a new session log only after planning is current: ` + "`bots log start <topic>`" + `
 
 ### During Work
 
