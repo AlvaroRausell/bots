@@ -4,7 +4,8 @@ GOBIN ?= $(HOME)/.local/bin
 
 # Build the bots CLI
 build:
-	go build -o bots ./cmd/bots
+	mkdir -p dist
+	go build -o dist/bots ./cmd/bots
 
 # Run tests
 test:
@@ -17,20 +18,20 @@ install:
 
 # Clean build artifacts
 clean:
-	rm -f bots
+	rm -rf dist
 	go clean
 
 # Run the installer TUI
 install-mcp: build
-	./bots install
+	./dist/bots install
 
 # Start MCP server (for testing)
 mcp: build
-	./bots mcp serve
+	./dist/bots mcp serve
 
 # Development mode - rebuild and run
 dev: build
-	./bots help
+	./dist/bots help
 
 # Create .bots directory structure
 init:

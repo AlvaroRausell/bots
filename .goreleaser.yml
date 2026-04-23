@@ -1,0 +1,55 @@
+version: 2
+
+project_name: bots
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/bots
+    binary: bots
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+brews:
+  - repository:
+      owner: AlvaroRausell
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/AlvaroRausell/bots"
+    description: "Bots - Session Persistence & Decision Tracking CLI"
+    license: "MIT"
+    install: |
+      bin.install "bots"
+    test: |
+      system "#{bin}/bots", "help"
+
+release:
+  github:
+    owner: AlvaroRausell
+    name: bots

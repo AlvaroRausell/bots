@@ -67,29 +67,19 @@ project/
 
 ## Installation
 
-### Quick Install
+### Homebrew (macOS & Linux)
 
 ```bash
-# Clone and build
-git clone <repo>
-cd bots
-make build
-
-# Install MCP to your AI agent
-./bots install
+brew install AlvaroRausell/tap/bots
 ```
 
 ### From Source
 
 ```bash
-go build -o bots ./cmd/bots
-```
-
-### Add to PATH
-
-```bash
-make install                    # Installs to ~/.local/bin by default
-make install GOBIN=$HOME/bin    # Override the install directory
+git clone https://github.com/AlvaroRausell/bots.git
+cd bots
+make build      # Binary goes to dist/bots
+make install    # Installs to ~/.local/bin (override with GOBIN=)
 ```
 
 ### Note for mise users
@@ -347,9 +337,9 @@ The skill document tells AI agents how to use this system. See `.bots/skills/ses
 ### Build from Source
 
 ```bash
-git clone <repo>
+git clone https://github.com/AlvaroRausell/bots.git
 cd bots
-make build
+make build    # Output: dist/bots
 ```
 
 ### Run Tests
