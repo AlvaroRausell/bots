@@ -4,9 +4,94 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"bots/internal/document"
+	"bots/internal/workspace"
 )
+
+// Store manages the checkpoint document in a project workspace.
+type Store struct {
+	workspace workspace.Workspace
+}
+
+type ReadResult struct {
+	Path    string
+	Content string
+	Found   bool
+}
+
+type UpdateResult struct {
+	Path    string
+	Section string
+}
+
+type ListResult struct {
+	Path     string
+	Found    bool
+	Sections []string
+}
+
+func NewStore(ws workspace.Workspace) Store {
+	return Store{workspace: ws}
+}
+
+func NewDefaultStore() (Store, error) {
+	ws, err := workspace.FromCurrent(true)
+	if err != nil {
+		return Store{}, err
+	}
+	return NewStore(ws), nil
+}
+
+func (s Store) Read() (ReadResult, error) {
+	path := s.workspace.CheckpointFile()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ReadResult{Path: path, Found: false}, nil
+		}
+		return ReadResult{}, fmt.Errorf("read checkpoint: %w", err)
+	}
+
+	return ReadResult{Path: path, Content: string(content), Found: true}, nil
+}
+
+func (s Store) Update(section string, content string) (UpdateResult, error) {
+	if err := os.MkdirAll(s.workspace.BotsDir(), 0755); err != nil {
+		return UpdateResult{}, fmt.Errorf("create project state directory: %w", err)
+	}
+
+	path := s.workspace.CheckpointFile()
+	var existingContent string
+	if data, err := os.ReadFile(path); err == nil {
+		existingContent = string(data)
+	} else if !os.IsNotExist(err) {
+		return UpdateResult{}, fmt.Errorf("read checkpoint: %w", err)
+	}
+
+	sectionHeader := fmt.Sprintf("## %s", section)
+	newContent := document.UpsertSection(existingContent, sectionHeader, content)
+
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		return UpdateResult{}, fmt.Errorf("write checkpoint: %w", err)
+	}
+
+	return UpdateResult{Path: path, Section: section}, nil
+}
+
+func (s Store) List() (ListResult, error) {
+	path := s.workspace.CheckpointFile()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ListResult{Path: path, Found: false}, nil
+		}
+		return ListResult{}, fmt.Errorf("read checkpoint: %w", err)
+	}
+
+	return ListResult{Path: path, Found: true, Sections: document.ListSections(string(content), 2)}, nil
+}
 
 func Read() {
 	var buf strings.Builder
@@ -15,19 +100,31 @@ func Read() {
 }
 
 func ReadTo(w io.Writer) {
-	checkpointFile := getCheckpointFile()
-	content, err := os.ReadFile(checkpointFile)
+	store, err := NewDefaultStore()
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintln(w, "No CHECKPOINTS.md found")
-			fmt.Fprintln(w, "Use 'bots checkpoint update' to create initial checkpoint")
-			return
-		}
 		fmt.Fprintf(w, "Error reading checkpoint file: %v\n", err)
 		return
 	}
 
-	fmt.Fprintln(w, string(content))
+	result, err := store.Read()
+	if err != nil {
+		fmt.Fprintf(w, "Error reading checkpoint file: %v\n", err)
+		return
+	}
+
+	WriteReadResult(w, result)
+}
+
+func WriteReadResult(w io.Writer, result ReadResult) {
+	if !result.Found {
+		fmt.Fprintln(w, "No CHECKPOINTS.md found")
+		fmt.Fprintln(w, "Use 'bots checkpoint update' to create initial checkpoint")
+		return
+	}
+	fmt.Fprint(w, result.Content)
+	if !strings.HasSuffix(result.Content, "\n") {
+		fmt.Fprintln(w)
+	}
 }
 
 func Update(section string, content string) {
@@ -37,83 +134,23 @@ func Update(section string, content string) {
 }
 
 func UpdateTo(section string, content string, w io.Writer) {
-	checkpointFile := getCheckpointFile()
-
-	var existingContent string
-	if data, err := os.ReadFile(checkpointFile); err == nil {
-		existingContent = string(data)
-	}
-
-	sectionHeader := fmt.Sprintf("## %s", section)
-
-	var newContent string
-	if !strings.Contains(existingContent, sectionHeader+"\n") && !strings.HasSuffix(existingContent, sectionHeader) {
-		if existingContent != "" && !strings.HasSuffix(existingContent, "\n\n") {
-			if strings.HasSuffix(existingContent, "\n") && !strings.HasSuffix(existingContent, "\n\n") {
-				existingContent += "\n"
-			} else if !strings.HasSuffix(existingContent, "\n") {
-				existingContent += "\n\n"
-			}
-		}
-		newContent = existingContent + sectionHeader + "\n\n" + content + "\n"
-	} else {
-		newContent = replaceSection(existingContent, sectionHeader, content)
-	}
-
-	if err := os.WriteFile(checkpointFile, []byte(newContent), 0644); err != nil {
+	store, err := NewDefaultStore()
+	if err != nil {
 		fmt.Fprintf(w, "Error writing checkpoint file: %v\n", err)
 		return
 	}
 
-	fmt.Fprintf(w, "Updated checkpoint section: %s\n", section)
+	result, err := store.Update(section, content)
+	if err != nil {
+		fmt.Fprintf(w, "Error writing checkpoint file: %v\n", err)
+		return
+	}
+
+	WriteUpdateResult(w, result)
 }
 
-func replaceSection(existingContent, sectionHeader, content string) string {
-	lines := strings.Split(existingContent, "\n")
-	var newLines []string
-	inCodeBlock := false
-	inTargetSection := false
-	contentInserted := false
-
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-
-		if strings.HasPrefix(line, "```") {
-			inCodeBlock = !inCodeBlock
-		}
-
-		if !inCodeBlock && line == sectionHeader {
-			inTargetSection = true
-			contentInserted = false
-			continue
-		}
-
-		if inTargetSection && !inCodeBlock && strings.HasPrefix(line, "## ") && line != sectionHeader {
-			if !contentInserted {
-				newLines = append(newLines, sectionHeader)
-				newLines = append(newLines, "")
-				newLines = append(newLines, strings.Split(content, "\n")...)
-				newLines = append(newLines, "")
-				contentInserted = true
-			}
-			inTargetSection = false
-			newLines = append(newLines, line)
-			continue
-		}
-
-		if !inTargetSection {
-			newLines = append(newLines, line)
-		}
-	}
-
-	if inTargetSection && !contentInserted {
-		newLines = append(newLines, sectionHeader)
-		newLines = append(newLines, "")
-		newLines = append(newLines, strings.Split(content, "\n")...)
-		newLines = append(newLines, "")
-	}
-
-	return strings.Join(newLines, "\n")
+func WriteUpdateResult(w io.Writer, result UpdateResult) {
+	fmt.Fprintf(w, "Updated checkpoint section: %s\n", result.Section)
 }
 
 func List() {
@@ -123,64 +160,34 @@ func List() {
 }
 
 func ListTo(w io.Writer) {
-	checkpointFile := getCheckpointFile()
-	content, err := os.ReadFile(checkpointFile)
+	store, err := NewDefaultStore()
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintln(w, "No CHECKPOINTS.md found")
-			return
-		}
 		fmt.Fprintf(w, "Error reading checkpoint file: %v\n", err)
 		return
 	}
 
-	lines := strings.Split(string(content), "\n")
-	inCodeBlock := false
-	var sections []string
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "```") {
-			inCodeBlock = !inCodeBlock
-		}
-		if !inCodeBlock && strings.HasPrefix(line, "## ") {
-			sections = append(sections, strings.TrimPrefix(line, "## "))
-		}
+	result, err := store.List()
+	if err != nil {
+		fmt.Fprintf(w, "Error reading checkpoint file: %v\n", err)
+		return
 	}
 
-	if len(sections) == 0 {
+	WriteListResult(w, result)
+}
+
+func WriteListResult(w io.Writer, result ListResult) {
+	if !result.Found {
+		fmt.Fprintln(w, "No CHECKPOINTS.md found")
+		return
+	}
+
+	if len(result.Sections) == 0 {
 		fmt.Fprintln(w, "No checkpoint sections found")
 		return
 	}
 
 	fmt.Fprintln(w, "Checkpoint sections:")
-	for _, section := range sections {
+	for _, section := range result.Sections {
 		fmt.Fprintf(w, "  - %s\n", section)
-	}
-}
-
-func getCheckpointFile() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	for {
-		botsDir := filepath.Join(dir, ".bots")
-		checkpointFile := filepath.Join(botsDir, "CHECKPOINTS.md")
-		if _, err := os.Stat(checkpointFile); err == nil {
-			return checkpointFile
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			defaultBotsDir := ".bots"
-			if err := os.MkdirAll(defaultBotsDir, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating .bots directory: %v\n", err)
-				os.Exit(1)
-			}
-			return filepath.Join(defaultBotsDir, "CHECKPOINTS.md")
-		}
-		dir = parent
 	}
 }

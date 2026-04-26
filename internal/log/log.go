@@ -1,6 +1,7 @@
 package log
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,24 +10,99 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"bots/internal/workspace"
 )
 
-func StartLog(topic string) {
-	var buf strings.Builder
-	StartLogTo(topic, &buf)
-	fmt.Print(buf.String())
+var (
+	ErrLogExists   = errors.New("session log already exists")
+	ErrLogNotFound = errors.New("session log not found")
+)
+
+// Store manages session logs in a project workspace.
+type Store struct {
+	workspace workspace.Workspace
+	now       func() time.Time
 }
 
-func StartLogTo(topic string, w io.Writer) {
-	logsDir := getLogsDir()
-	slug := createSlug(topic)
-	filename := fmt.Sprintf("%s-%s.md", time.Now().Format("2006-01-02"), slug)
-	fp := filepath.Join(logsDir, filename)
+type StartResult struct {
+	Topic    string
+	Slug     string
+	Filename string
+	Path     string
+}
 
-	if _, err := os.Stat(fp); err == nil {
-		fmt.Fprintf(w, "Log file already exists: %s\n", filename)
-		fmt.Fprintln(w, "Use a different topic or append to existing log")
-		return
+type AppendResult struct {
+	Slug     string
+	Filename string
+	Path     string
+}
+
+type Match struct {
+	File    string
+	Line    int
+	Content string
+}
+
+type SearchResult struct {
+	Query   string
+	Matches []Match
+}
+
+type Decision struct {
+	Date    string
+	Content string
+}
+
+type SummaryResult struct {
+	Slug      string
+	Filename  string
+	Decisions []Decision
+}
+
+type LogInfo struct {
+	Filename string
+	Path     string
+	Modified time.Time
+}
+
+type ListResult struct {
+	Logs []LogInfo
+}
+
+func NewStore(ws workspace.Workspace) Store {
+	return NewStoreWithClock(ws, time.Now)
+}
+
+func NewStoreWithClock(ws workspace.Workspace, now func() time.Time) Store {
+	if now == nil {
+		now = time.Now
+	}
+	return Store{workspace: ws, now: now}
+}
+
+func NewDefaultStore() (Store, error) {
+	ws, err := workspace.FromCurrent(true)
+	if err != nil {
+		return Store{}, err
+	}
+	return NewStore(ws), nil
+}
+
+func (s Store) Start(topic string) (StartResult, error) {
+	if err := s.workspace.EnsureLogsDir(); err != nil {
+		return StartResult{}, err
+	}
+
+	slug := createSlug(topic)
+	filename := fmt.Sprintf("%s-%s.md", s.now().Format("2006-01-02"), slug)
+	path := filepath.Join(s.workspace.LogsDir(), filename)
+	result := StartResult{Topic: topic, Slug: slug, Filename: filename, Path: path}
+
+	if _, err := os.Stat(path); err == nil {
+		return result, ErrLogExists
+	} else if !os.IsNotExist(err) {
+		return StartResult{}, fmt.Errorf("stat session log: %w", err)
 	}
 
 	content := fmt.Sprintf(`# Session Log: %s
@@ -35,71 +111,44 @@ func StartLogTo(topic string, w io.Writer) {
 
 - Started session on topic: %s
 
-`, topic, time.Now().Format("2006-01-02"), topic)
+`, topic, s.now().Format("2006-01-02"), topic)
 
-	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
-		fmt.Fprintf(w, "Error creating log file: %v\n", err)
-		return
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return StartResult{}, fmt.Errorf("write session log: %w", err)
 	}
 
-	fmt.Fprintf(w, "Created session log: %s\n", filename)
-	fmt.Fprintf(w, "Use 'bots log append %s \"<message>\"' to add entries\n", slug)
+	return result, nil
 }
 
-func AppendEntry(slug string, message string) {
-	var buf strings.Builder
-	AppendEntryTo(slug, message, &buf)
-	fmt.Print(buf.String())
-}
-
-func AppendEntryTo(slug string, message string, w io.Writer) {
-	logsDir := getLogsDir()
-	filename := findLogFile(slug)
-
-	if filename == "" {
-		fmt.Fprintf(w, "No log file found for slug: %s\n", slug)
-		fmt.Fprintln(w, "Use 'bots log list' to see available logs")
-		return
-	}
-
-	fp := filepath.Join(logsDir, filename)
-
-	fileContent, err := os.ReadFile(fp)
+func (s Store) Append(slug string, message string) (AppendResult, error) {
+	filename, err := s.findLogFile(slug)
 	if err != nil {
-		fmt.Fprintf(w, "Error reading log file: %v\n", err)
-		return
+		return AppendResult{}, err
 	}
 
-	now := time.Now()
-	entry := fmt.Sprintf("\n## %s\n\n- %s\n\n", now.Format("2006-01-02"), message)
-	newContent := string(fileContent) + entry
-
-	if err := os.WriteFile(fp, []byte(newContent), 0644); err != nil {
-		fmt.Fprintf(w, "Error writing to log file: %v\n", err)
-		return
-	}
-
-	fmt.Fprintf(w, "Appended to %s\n", filename)
-}
-
-func SearchLogs(query string) {
-	var buf strings.Builder
-	SearchLogsTo(query, &buf)
-	fmt.Print(buf.String())
-}
-
-func SearchLogsTo(query string, w io.Writer) {
-	logsDir := getLogsDir()
-	files, err := os.ReadDir(logsDir)
+	path := filepath.Join(s.workspace.LogsDir(), filename)
+	fileContent, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(w, "Error reading logs directory: %v\n", err)
-		return
+		return AppendResult{}, fmt.Errorf("read session log: %w", err)
 	}
 
-	type Match struct {
-		File    string
-		Line    int
-		Content string
+	newContent := appendMessageToDateSection(string(fileContent), s.now().Format("2006-01-02"), message)
+
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		return AppendResult{}, fmt.Errorf("write session log: %w", err)
+	}
+
+	return AppendResult{Slug: strings.TrimSuffix(filename, ".md"), Filename: filename, Path: path}, nil
+}
+
+func (s Store) Search(query string) (SearchResult, error) {
+	if err := s.workspace.EnsureLogsDir(); err != nil {
+		return SearchResult{}, err
+	}
+
+	files, err := os.ReadDir(s.workspace.LogsDir())
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("read logs directory: %w", err)
 	}
 
 	var matches []Match
@@ -110,7 +159,7 @@ func SearchLogsTo(query string, w io.Writer) {
 			continue
 		}
 
-		fileContent, err := os.ReadFile(filepath.Join(logsDir, file.Name()))
+		fileContent, err := os.ReadFile(filepath.Join(s.workspace.LogsDir(), file.Name()))
 		if err != nil {
 			continue
 		}
@@ -127,41 +176,23 @@ func SearchLogsTo(query string, w io.Writer) {
 		}
 	}
 
-	if len(matches) == 0 {
-		fmt.Fprintln(w, "No matches found")
-		return
-	}
-
-	fmt.Fprintf(w, "Found %d matches for '%s':\n\n", len(matches), query)
-	for _, match := range matches {
-		fmt.Fprintf(w, "%s:%d: %s\n", match.File, match.Line, match.Content)
-	}
+	return SearchResult{Query: query, Matches: matches}, nil
 }
 
-func SummarizeLog(slug string) {
-	var buf strings.Builder
-	SummarizeLogTo(slug, &buf)
-	fmt.Print(buf.String())
-}
-
-func SummarizeLogTo(slug string, w io.Writer) {
-	logsDir := getLogsDir()
-	filename := findLogFile(slug)
-
-	if filename == "" {
-		fmt.Fprintf(w, "No log file found for slug: %s\n", slug)
-		return
-	}
-
-	fp := filepath.Join(logsDir, filename)
-	content, err := os.ReadFile(fp)
+func (s Store) Summarize(slug string) (SummaryResult, error) {
+	filename, err := s.findLogFile(slug)
 	if err != nil {
-		fmt.Fprintf(w, "Error reading log file: %v\n", err)
-		return
+		return SummaryResult{}, err
+	}
+
+	path := filepath.Join(s.workspace.LogsDir(), filename)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return SummaryResult{}, fmt.Errorf("read session log: %w", err)
 	}
 
 	lines := strings.Split(string(content), "\n")
-	var decisions []string
+	var decisions []Decision
 	var currentDate string
 
 	for _, line := range lines {
@@ -173,23 +204,218 @@ func SummarizeLogTo(slug string, w io.Writer) {
 		}
 
 		if strings.Contains(strings.ToLower(line), "decision:") {
-			if currentDate != "" {
-				decisions = append(decisions, fmt.Sprintf("[%s] %s", currentDate, strings.TrimSpace(line)))
-			} else {
-				decisions = append(decisions, strings.TrimSpace(line))
+			decisions = append(decisions, Decision{Date: currentDate, Content: strings.TrimSpace(line)})
+		}
+	}
+
+	return SummaryResult{Slug: strings.TrimSuffix(filename, ".md"), Filename: filename, Decisions: decisions}, nil
+}
+
+func (s Store) List() (ListResult, error) {
+	if err := s.workspace.EnsureLogsDir(); err != nil {
+		return ListResult{}, err
+	}
+
+	files, err := os.ReadDir(s.workspace.LogsDir())
+	if err != nil {
+		return ListResult{}, fmt.Errorf("read logs directory: %w", err)
+	}
+
+	var logs []LogInfo
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".md") {
+			continue
+		}
+		info, err := file.Info()
+		if err != nil {
+			continue
+		}
+		logs = append(logs, LogInfo{
+			Filename: file.Name(),
+			Path:     filepath.Join(s.workspace.LogsDir(), file.Name()),
+			Modified: info.ModTime(),
+		})
+	}
+
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].Modified.After(logs[j].Modified)
+	})
+
+	return ListResult{Logs: logs}, nil
+}
+
+func (s Store) findLogFile(slug string) (string, error) {
+	if strings.TrimSpace(slug) == "" {
+		return "", fmt.Errorf("%w: %s", ErrLogNotFound, slug)
+	}
+
+	if err := s.workspace.EnsureLogsDir(); err != nil {
+		return "", err
+	}
+
+	files, err := os.ReadDir(s.workspace.LogsDir())
+	if err != nil {
+		return "", fmt.Errorf("read logs directory: %w", err)
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
+			baseName := strings.TrimSuffix(file.Name(), ".md")
+			if baseName == slug {
+				return file.Name(), nil
 			}
 		}
 	}
 
-	fmt.Fprintf(w, "Summary of %s:\n\n", filename)
-	if len(decisions) == 0 {
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
+			baseName := strings.TrimSuffix(file.Name(), ".md")
+			if strings.Contains(baseName, slug) {
+				return file.Name(), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("%w: %s", ErrLogNotFound, slug)
+}
+
+func StartLog(topic string) {
+	var buf strings.Builder
+	StartLogTo(topic, &buf)
+	fmt.Print(buf.String())
+}
+
+func StartLogTo(topic string, w io.Writer) {
+	store, err := NewDefaultStore()
+	if err != nil {
+		fmt.Fprintf(w, "Error creating log file: %v\n", err)
+		return
+	}
+
+	result, err := store.Start(topic)
+	if err != nil {
+		if errors.Is(err, ErrLogExists) {
+			fmt.Fprintf(w, "Log file already exists: %s\n", result.Filename)
+			fmt.Fprintln(w, "Use a different topic or append to existing log")
+			return
+		}
+		fmt.Fprintf(w, "Error creating log file: %v\n", err)
+		return
+	}
+
+	WriteStartResult(w, result)
+}
+
+func WriteStartResult(w io.Writer, result StartResult) {
+	fmt.Fprintf(w, "Created session log: %s\n", result.Filename)
+	fmt.Fprintf(w, "Use 'bots log append %s \"<message>\"' to add entries\n", result.Slug)
+}
+
+func AppendEntry(slug string, message string) {
+	var buf strings.Builder
+	AppendEntryTo(slug, message, &buf)
+	fmt.Print(buf.String())
+}
+
+func AppendEntryTo(slug string, message string, w io.Writer) {
+	store, err := NewDefaultStore()
+	if err != nil {
+		fmt.Fprintf(w, "Error reading log file: %v\n", err)
+		return
+	}
+
+	result, err := store.Append(slug, message)
+	if err != nil {
+		if errors.Is(err, ErrLogNotFound) {
+			fmt.Fprintf(w, "No log file found for slug: %s\n", slug)
+			fmt.Fprintln(w, "Use 'bots log list' to see available logs")
+			return
+		}
+		fmt.Fprintf(w, "Error writing to log file: %v\n", err)
+		return
+	}
+
+	WriteAppendResult(w, result)
+}
+
+func WriteAppendResult(w io.Writer, result AppendResult) {
+	fmt.Fprintf(w, "Appended to %s\n", result.Filename)
+}
+
+func SearchLogs(query string) {
+	var buf strings.Builder
+	SearchLogsTo(query, &buf)
+	fmt.Print(buf.String())
+}
+
+func SearchLogsTo(query string, w io.Writer) {
+	store, err := NewDefaultStore()
+	if err != nil {
+		fmt.Fprintf(w, "Error reading logs directory: %v\n", err)
+		return
+	}
+
+	result, err := store.Search(query)
+	if err != nil {
+		fmt.Fprintf(w, "Error reading logs directory: %v\n", err)
+		return
+	}
+
+	WriteSearchResult(w, result)
+}
+
+func WriteSearchResult(w io.Writer, result SearchResult) {
+	if len(result.Matches) == 0 {
+		fmt.Fprintln(w, "No matches found")
+		return
+	}
+
+	fmt.Fprintf(w, "Found %d matches for '%s':\n\n", len(result.Matches), result.Query)
+	for _, match := range result.Matches {
+		fmt.Fprintf(w, "%s:%d: %s\n", match.File, match.Line, match.Content)
+	}
+}
+
+func SummarizeLog(slug string) {
+	var buf strings.Builder
+	SummarizeLogTo(slug, &buf)
+	fmt.Print(buf.String())
+}
+
+func SummarizeLogTo(slug string, w io.Writer) {
+	store, err := NewDefaultStore()
+	if err != nil {
+		fmt.Fprintf(w, "Error reading log file: %v\n", err)
+		return
+	}
+
+	result, err := store.Summarize(slug)
+	if err != nil {
+		if errors.Is(err, ErrLogNotFound) {
+			fmt.Fprintf(w, "No log file found for slug: %s\n", slug)
+			return
+		}
+		fmt.Fprintf(w, "Error reading log file: %v\n", err)
+		return
+	}
+
+	WriteSummaryResult(w, result)
+}
+
+func WriteSummaryResult(w io.Writer, result SummaryResult) {
+	fmt.Fprintf(w, "Summary of %s:\n\n", result.Filename)
+	if len(result.Decisions) == 0 {
 		fmt.Fprintln(w, "No decisions recorded")
 		return
 	}
 
-	fmt.Fprintf(w, "Total decisions: %d\n\n", len(decisions))
-	for _, decision := range decisions {
-		fmt.Fprintf(w, "- %s\n", decision)
+	fmt.Fprintf(w, "Total decisions: %d\n\n", len(result.Decisions))
+	for _, decision := range result.Decisions {
+		if decision.Date != "" {
+			fmt.Fprintf(w, "- [%s] %s\n", decision.Date, decision.Content)
+		} else {
+			fmt.Fprintf(w, "- %s\n", decision.Content)
+		}
 	}
 }
 
@@ -200,73 +426,133 @@ func ListLogs() {
 }
 
 func ListLogsTo(w io.Writer) {
-	logsDir := getLogsDir()
-	files, err := os.ReadDir(logsDir)
+	store, err := NewDefaultStore()
 	if err != nil {
 		fmt.Fprintf(w, "Error reading logs directory: %v\n", err)
 		return
 	}
 
-	var logFiles []string
-	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
-			logFiles = append(logFiles, file.Name())
-		}
+	result, err := store.List()
+	if err != nil {
+		fmt.Fprintf(w, "Error reading logs directory: %v\n", err)
+		return
 	}
 
-	if len(logFiles) == 0 {
+	WriteListResult(w, result)
+}
+
+func WriteListResult(w io.Writer, result ListResult) {
+	if len(result.Logs) == 0 {
 		fmt.Fprintln(w, "No session logs found")
 		fmt.Fprintln(w, "Use 'bots log start <topic>' to create one")
 		return
 	}
 
-	sort.Slice(logFiles, func(i, j int) bool {
-		info1, _ := os.Stat(filepath.Join(logsDir, logFiles[i]))
-		info2, _ := os.Stat(filepath.Join(logsDir, logFiles[j]))
-		if info1 == nil || info2 == nil {
-			return logFiles[i] < logFiles[j]
-		}
-		return info1.ModTime().After(info2.ModTime())
-	})
-
 	fmt.Fprintln(w, "Session logs:")
-	for _, file := range logFiles {
-		info, err := os.Stat(filepath.Join(logsDir, file))
-		if err != nil {
-			fmt.Fprintf(w, "  %s\n", file)
-		} else {
-			fmt.Fprintf(w, "  %s (%s)\n", file, info.ModTime().Format("2006-01-02"))
-		}
+	for _, file := range result.Logs {
+		fmt.Fprintf(w, "  %s (%s)\n", file.Filename, file.Modified.Format("2006-01-02"))
 	}
 }
 
 var dateRegex = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}`)
 
-func getLogsDir() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
-		os.Exit(1)
+func appendMessageToDateSection(content string, date string, message string) string {
+	entry := fmt.Sprintf("- %s", message)
+	_, afterHeading, sectionEnd, found := findDateSectionBounds(content, date)
+	if !found {
+		trimmed := strings.TrimRight(content, "\r\n")
+		if trimmed == "" {
+			return fmt.Sprintf("## %s\n\n%s\n\n", date, entry)
+		}
+		return fmt.Sprintf("%s\n\n## %s\n\n%s\n\n", trimmed, date, entry)
 	}
 
-	for {
-		botsDir := filepath.Join(dir, ".bots")
-		logsDirPath := filepath.Join(botsDir, "logs")
-		if _, err := os.Stat(logsDirPath); err == nil {
-			return logsDirPath
+	sectionBody := content[afterHeading:sectionEnd]
+	prefix := strings.TrimRight(content[:sectionEnd], "\r\n")
+	separator := "\n"
+	if strings.TrimSpace(sectionBody) == "" {
+		separator = "\n\n"
+	}
+
+	return prefix + separator + entry + "\n\n" + content[sectionEnd:]
+}
+
+func findDateSectionBounds(content string, date string) (int, int, int, bool) {
+	var sectionStart int
+	var afterHeading int
+	found := false
+	inFence := false
+	fenceChar := byte(0)
+	fenceLen := 0
+
+	for offset := 0; offset < len(content); {
+		lineStart := offset
+		lineEnd := strings.IndexByte(content[offset:], '\n')
+		if lineEnd == -1 {
+			lineEnd = len(content)
+		} else {
+			lineEnd += offset
+		}
+		nextLineStart := lineEnd
+		if nextLineStart < len(content) && content[nextLineStart] == '\n' {
+			nextLineStart++
 		}
 
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			defaultLogsDir := ".bots/logs"
-			if err := os.MkdirAll(defaultLogsDir, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating logs directory: %v\n", err)
-				os.Exit(1)
+		line := strings.TrimSuffix(content[lineStart:lineEnd], "\r")
+		if !inFence && strings.HasPrefix(line, "## ") {
+			heading := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			if found {
+				return sectionStart, afterHeading, lineStart, true
 			}
-			return defaultLogsDir
+			if heading == date {
+				sectionStart = lineStart
+				afterHeading = nextLineStart
+				found = true
+			}
 		}
-		dir = parent
+
+		if char, length, ok := markdownFence(line); ok {
+			if inFence {
+				if char == fenceChar && length >= fenceLen {
+					inFence = false
+					fenceChar = 0
+					fenceLen = 0
+				}
+			} else {
+				inFence = true
+				fenceChar = char
+				fenceLen = length
+			}
+		}
+
+		offset = nextLineStart
 	}
+
+	if found {
+		return sectionStart, afterHeading, len(content), true
+	}
+	return 0, 0, 0, false
+}
+
+func markdownFence(line string) (byte, int, bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	if trimmed == "" {
+		return 0, 0, false
+	}
+
+	char := trimmed[0]
+	if char != '`' && char != '~' {
+		return 0, 0, false
+	}
+
+	length := 0
+	for length < len(trimmed) && trimmed[length] == char {
+		length++
+	}
+	if length < 3 {
+		return 0, 0, false
+	}
+	return char, length, true
 }
 
 func createSlug(topic string) string {
@@ -275,39 +561,11 @@ func createSlug(topic string) string {
 	slug = slugRegex.ReplaceAllString(slug, "")
 	slug = multiHyphenRegex.ReplaceAllString(slug, "-")
 	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		slug = "session"
+	}
 	return slug
 }
 
 var slugRegex = regexp.MustCompile(`[^a-z0-9-]`)
 var multiHyphenRegex = regexp.MustCompile(`-+`)
-
-func findLogFile(slug string) string {
-	return findFileBySlug(getLogsDir(), slug)
-}
-
-func findFileBySlug(dir, slug string) string {
-	files, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-
-	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
-			baseName := strings.TrimSuffix(file.Name(), ".md")
-			if baseName == slug {
-				return file.Name()
-			}
-		}
-	}
-
-	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
-			baseName := strings.TrimSuffix(file.Name(), ".md")
-			if strings.Contains(baseName, slug) {
-				return file.Name()
-			}
-		}
-	}
-
-	return ""
-}

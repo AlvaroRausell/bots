@@ -174,6 +174,16 @@ bots task update "phase-1.5" DONE
 bots task list
 ```
 
+#### Git Integration
+
+```bash
+# Commit .bots project state
+bots git_commit_checkpoint "Update project state"
+
+# Show current branch information
+bots git_branch_info
+```
+
 #### MCP Server
 
 ```bash

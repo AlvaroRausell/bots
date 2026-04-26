@@ -29,6 +29,10 @@ func main() {
 		cli.InstallCommand(args)
 	case "init":
 		cli.InitCommand(args)
+	case "git_commit_checkpoint":
+		cli.GitCommitCheckpointCommand(args)
+	case "git_branch_info":
+		cli.GitBranchInfoCommand(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -51,6 +55,8 @@ Commands:
   task        Task handoff protocol
   mcp         MCP server
   install     Install MCP to AI agents
+  git_commit_checkpoint  Commit .bots project state
+  git_branch_info        Show current git branch information
 
 Examples:
   bots log start "feature-x"           Start a new session log
@@ -58,6 +64,7 @@ Examples:
   bots checkpoint read                 Read current checkpoint
   bots task create "phase-1.5"         Create task file
   bots mcp serve                       Start MCP server
+  bots git_commit_checkpoint "msg"     Commit .bots project state
 
 Run 'bots <command> help' for more information on a command.`)
 }
