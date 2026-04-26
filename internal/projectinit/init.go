@@ -6,9 +6,31 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"bots/internal/workspace"
 )
 
-// Initialize creates the .bots directory structure for a new project
+// Initializer creates Bots project state in a project workspace.
+type Initializer struct {
+	workspace workspace.Workspace
+	now       func() time.Time
+}
+
+type InitResult struct {
+	ProjectName string
+	Workspace   workspace.Workspace
+	Created     []string
+	Notes       []string
+}
+
+func NewInitializer(ws workspace.Workspace, now func() time.Time) Initializer {
+	if now == nil {
+		now = time.Now
+	}
+	return Initializer{workspace: ws, now: now}
+}
+
+// Initialize creates the .bots directory structure for a new project from cwd.
 func Initialize(projectName string) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -16,70 +38,77 @@ func Initialize(projectName string) {
 		os.Exit(1)
 	}
 
-	dirs := []string{
-		filepath.Join(wd, ".bots"),
-		filepath.Join(wd, ".bots", "logs"),
-		filepath.Join(wd, ".bots", "tasks"),
-		filepath.Join(wd, ".bots", "skills", "session-persistence"),
-	}
-
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating directory %s: %v\n", dir, err)
-			os.Exit(1)
-		}
-	}
-
-	// Create CHECKPOINTS.md with initial content (pure project state, no instructions)
-	checkpointContent := createCheckpointContent(projectName, time.Now().Format("2006-01-02"))
-
-	checkpointPath := filepath.Join(wd, ".bots", "CHECKPOINTS.md")
-	if err := os.WriteFile(checkpointPath, []byte(checkpointContent), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating CHECKPOINTS.md: %v\n", err)
+	ws := workspace.Workspace{Root: wd}
+	result, err := NewInitializer(ws, time.Now).Initialize(projectName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing project: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Create AGENTS.md in .bots/ with AI agent instructions
-	agentsContent := createAgentsContent()
+	PrintInitResult(result)
+}
 
-	agentsPath := filepath.Join(wd, ".bots", "AGENTS.md")
-	if err := os.WriteFile(agentsPath, []byte(agentsContent), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating .bots/AGENTS.md: %v\n", err)
-		os.Exit(1)
+func (i Initializer) Initialize(projectName string) (InitResult, error) {
+	if projectName == "" {
+		return InitResult{}, fmt.Errorf("project name is required")
 	}
 
-	// Create .gitkeep files in empty directories
-	gitkeepFiles := []string{
-		filepath.Join(wd, ".bots", "logs", ".gitkeep"),
-		filepath.Join(wd, ".bots", "tasks", ".gitkeep"),
+	result := InitResult{ProjectName: projectName, Workspace: i.workspace}
+
+	if err := i.workspace.EnsureProjectStateDirs(); err != nil {
+		return InitResult{}, err
+	}
+	result.Created = append(result.Created,
+		".bots/AGENTS.md",
+		".bots/CHECKPOINTS.md",
+		".bots/logs/",
+		".bots/tasks/",
+		".bots/skills/",
+	)
+
+	checkpointContent := createCheckpointContent(projectName, i.now().Format("2006-01-02"))
+	if err := os.WriteFile(i.workspace.CheckpointFile(), []byte(checkpointContent), 0644); err != nil {
+		return InitResult{}, fmt.Errorf("create CHECKPOINTS.md: %w", err)
 	}
 
-	for _, file := range gitkeepFiles {
+	if err := os.WriteFile(i.workspace.AgentsFile(), []byte(createAgentsContent()), 0644); err != nil {
+		return InitResult{}, fmt.Errorf("create .bots/AGENTS.md: %w", err)
+	}
+
+	for _, file := range []string{
+		filepath.Join(i.workspace.LogsDir(), ".gitkeep"),
+		filepath.Join(i.workspace.TasksDir(), ".gitkeep"),
+	} {
 		if err := os.WriteFile(file, []byte(""), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", file, err)
-			os.Exit(1)
+			return InitResult{}, fmt.Errorf("create %s: %w", file, err)
 		}
 	}
 
-	// Create root AGENTS.md (pointer to .bots/AGENTS.md)
-	rootAgentsContent := createRootAgentsContent()
-
-	rootAgentsPath := filepath.Join(wd, "AGENTS.md")
-	if err := createOrAppendFile(rootAgentsPath, rootAgentsContent, "AGENTS.md"); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating AGENTS.md: %v\n", err)
-		os.Exit(1)
+	if note, err := createOrAppendFile(i.workspace.RootAgentsFile(), createRootAgentsContent(), "AGENTS.md"); err != nil {
+		return InitResult{}, fmt.Errorf("create AGENTS.md: %w", err)
+	} else if note != "" {
+		result.Notes = append(result.Notes, note)
 	}
+	result.Created = append(result.Created, "AGENTS.md")
 
-	// Create root CLAUDE.md (pointer to AGENTS.md)
-	rootClaudeContent := createRootClaudeContent()
-
-	rootClaudePath := filepath.Join(wd, "CLAUDE.md")
-	if err := createOrAppendFile(rootClaudePath, rootClaudeContent, "CLAUDE.md"); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating CLAUDE.md: %v\n", err)
-		os.Exit(1)
+	if note, err := createOrAppendFile(i.workspace.RootClaudeFile(), createRootClaudeContent(), "CLAUDE.md"); err != nil {
+		return InitResult{}, fmt.Errorf("create CLAUDE.md: %w", err)
+	} else if note != "" {
+		result.Notes = append(result.Notes, note)
 	}
+	result.Created = append(result.Created, "CLAUDE.md")
 
-	fmt.Printf("✅ Initialized .bots directory for project: %s\n\n", projectName)
+	return result, nil
+}
+
+func PrintInitResult(result InitResult) {
+	fmt.Printf("✅ Initialized .bots directory for project: %s\n\n", result.ProjectName)
+	for _, note := range result.Notes {
+		fmt.Println(note)
+	}
+	if len(result.Notes) > 0 {
+		fmt.Println()
+	}
 	fmt.Println("Created:")
 	fmt.Println("  .bots/AGENTS.md        - AI agent instructions")
 	fmt.Println("  .bots/CHECKPOINTS.md   - Living project state")
@@ -122,7 +151,7 @@ func createCheckpointContent(projectName, date string) string {
 - [ ] Project stages/phases are listed in the Project Phases section
 - [ ] Initial acceptance criteria or definition of done are captured
 - [ ] Risks, dependencies, and open questions are documented
-- [ ] Initial tasks have been outlined in `+"`.bots/tasks/`"+` if work is ready to begin
+- [ ] Initial tasks have been outlined in `+"`"+`.bots/tasks/`+"`"+` if work is ready to begin
 
 ---
 
@@ -212,7 +241,7 @@ Before doing anything, read:
 func createRootAgentsContent() string {
 	return `# AI Agent Instructions
 
-This project uses [bots](https://github.com/example/bots) for AI agent coordination.
+This project uses [bots](https://github.com/AlvaroRausell/bots) for AI agent coordination.
 
 See [` + "`.bots/AGENTS.md`" + `](` + "`.bots/AGENTS.md`" + `) for instructions.
 `
@@ -225,55 +254,37 @@ See [AGENTS.md](AGENTS.md) for AI agent instructions.
 `
 }
 
-// createOrAppendFile creates a file or appends bots instructions if file exists
-// For root AGENTS.md, checks for .bots/AGENTS.md reference
-// For root CLAUDE.md, checks for AGENTS.md reference
-func createOrAppendFile(path, content, filename string) error {
+// createOrAppendFile creates a file or appends bots instructions if file exists.
+func createOrAppendFile(path, content, filename string) (string, error) {
 	existing, err := os.ReadFile(path)
 	if err != nil {
-		// File doesn't exist, create it
-		return os.WriteFile(path, []byte(content), 0644)
+		if os.IsNotExist(err) {
+			return "", os.WriteFile(path, []byte(content), 0644)
+		}
+		return "", err
 	}
 
-	// File exists - check if it already has the appropriate marker
 	existingStr := string(existing)
 	if filename == "AGENTS.md" && strings.Contains(existingStr, ".bots/AGENTS.md") {
-		fmt.Printf("  ℹ️  %s already exists with bots reference, skipping\n", filename)
-		return nil
+		return fmt.Sprintf("  ℹ️  %s already exists with bots reference, skipping", filename), nil
 	}
 	if filename == "CLAUDE.md" && strings.Contains(existingStr, "AGENTS.md") {
-		fmt.Printf("  ℹ️  %s already exists with AGENTS.md reference, skipping\n", filename)
-		return nil
+		return fmt.Sprintf("  ℹ️  %s already exists with AGENTS.md reference, skipping", filename), nil
 	}
 
-	// Append bots instructions with a separator
 	appendedContent := fmt.Sprintf("\n\n---\n\n%s", content)
 	if err := os.WriteFile(path, append(existing, []byte(appendedContent)...), 0644); err != nil {
-		return err
+		return "", err
 	}
 
-	fmt.Printf("  ℹ️  Appended bots instructions to existing %s\n", filename)
-	return nil
+	return fmt.Sprintf("  ℹ️  Appended bots instructions to existing %s", filename), nil
 }
 
-// GetProjectRoot returns the path to the .bots directory
+// GetProjectRoot returns the root path of the discovered project workspace.
 func GetProjectRoot() string {
-	wd, err := os.Getwd()
+	ws, err := workspace.FromCurrent(false)
 	if err != nil {
 		return ""
 	}
-
-	dir := wd
-	for {
-		botsDir := filepath.Join(dir, ".bots")
-		if _, err := os.Stat(botsDir); err == nil {
-			return dir
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
+	return ws.Root
 }

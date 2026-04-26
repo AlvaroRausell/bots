@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,26 +10,237 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"bots/internal/document"
+	"bots/internal/workspace"
 )
 
-func Create(slug string) {
-	var buf strings.Builder
-	CreateTo(slug, &buf)
-	fmt.Print(buf.String())
+type TaskStatus string
+
+const (
+	StatusPending          TaskStatus = "PENDING"
+	StatusInProgress       TaskStatus = "IN_PROGRESS"
+	StatusReadyForReview   TaskStatus = "READY_FOR_REVIEW"
+	StatusChangesRequested TaskStatus = "CHANGES_REQUESTED"
+	StatusDone             TaskStatus = "DONE"
+	StatusUnknown          TaskStatus = "UNKNOWN"
+)
+
+var (
+	ErrTaskNotFound  = errors.New("task handoff not found")
+	ErrTaskExists    = errors.New("task handoff already exists")
+	ErrInvalidStatus = errors.New("invalid task status")
+	ErrStatusMissing = errors.New("task status not found")
+)
+
+// Store manages task handoff files in a project workspace.
+type Store struct {
+	workspace workspace.Workspace
 }
 
-func CreateTo(slug string, w io.Writer) {
-	slug = sanitizeSlug(slug)
-	tasksDir := getTasksDir()
-	filename := fmt.Sprintf("%s.md", slug)
-	fp := filepath.Join(tasksDir, filename)
+type CreateResult struct {
+	Slug string
+	Path string
+}
 
-	if _, err := os.Stat(fp); err == nil {
-		fmt.Fprintf(w, "Error: Task file already exists: %s\n", filename)
-		return
+type ReadResult struct {
+	Slug    string
+	Path    string
+	Content string
+}
+
+type StatusResult struct {
+	Slug   string
+	Path   string
+	Status TaskStatus
+}
+
+type UpdateStatusResult struct {
+	Slug   string
+	Path   string
+	Status TaskStatus
+}
+
+type TaskInfo struct {
+	Slug     string
+	Path     string
+	Status   TaskStatus
+	Modified time.Time
+}
+
+type ListResult struct {
+	Tasks []TaskInfo
+}
+
+func NewStore(ws workspace.Workspace) Store {
+	return Store{workspace: ws}
+}
+
+func NewDefaultStore() (Store, error) {
+	ws, err := workspace.FromCurrent(true)
+	if err != nil {
+		return Store{}, err
+	}
+	return NewStore(ws), nil
+}
+
+func (s Store) Create(slug string) (CreateResult, error) {
+	slug = sanitizeSlug(slug)
+	if err := s.workspace.EnsureTasksDir(); err != nil {
+		return CreateResult{}, err
 	}
 
-	content := fmt.Sprintf(`# %s
+	path := filepath.Join(s.workspace.TasksDir(), slug+".md")
+	if _, err := os.Stat(path); err == nil {
+		return CreateResult{Slug: slug, Path: path}, ErrTaskExists
+	} else if !os.IsNotExist(err) {
+		return CreateResult{}, fmt.Errorf("stat task handoff: %w", err)
+	}
+
+	if err := os.WriteFile(path, []byte(createTaskContent(slug)), 0644); err != nil {
+		return CreateResult{}, fmt.Errorf("write task handoff: %w", err)
+	}
+
+	return CreateResult{Slug: slug, Path: path}, nil
+}
+
+func (s Store) Read(slug string) (ReadResult, error) {
+	filename, err := s.findTaskFile(slug)
+	if err != nil {
+		return ReadResult{}, err
+	}
+
+	path := filepath.Join(s.workspace.TasksDir(), filename)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ReadResult{}, fmt.Errorf("read task handoff: %w", err)
+	}
+
+	return ReadResult{Slug: strings.TrimSuffix(filename, ".md"), Path: path, Content: string(content)}, nil
+}
+
+func (s Store) Status(slug string) (StatusResult, error) {
+	read, err := s.Read(slug)
+	if err != nil {
+		return StatusResult{}, err
+	}
+
+	status, err := readTaskStatus(read.Content)
+	if err != nil {
+		return StatusResult{}, err
+	}
+
+	return StatusResult{Slug: read.Slug, Path: read.Path, Status: status}, nil
+}
+
+func (s Store) UpdateStatus(slug string, newStatus string) (UpdateStatusResult, error) {
+	status, err := ParseStatus(newStatus)
+	if err != nil {
+		return UpdateStatusResult{}, err
+	}
+
+	read, err := s.Read(slug)
+	if err != nil {
+		return UpdateStatusResult{}, err
+	}
+
+	newContent := document.UpsertSection(read.Content, "## Status", string(status)+"\n\n---")
+	if err := os.WriteFile(read.Path, []byte(newContent), 0644); err != nil {
+		return UpdateStatusResult{}, fmt.Errorf("write task handoff: %w", err)
+	}
+
+	return UpdateStatusResult{Slug: read.Slug, Path: read.Path, Status: status}, nil
+}
+
+func (s Store) List() (ListResult, error) {
+	if err := s.workspace.EnsureTasksDir(); err != nil {
+		return ListResult{}, err
+	}
+
+	files, err := os.ReadDir(s.workspace.TasksDir())
+	if err != nil {
+		return ListResult{}, fmt.Errorf("read tasks directory: %w", err)
+	}
+
+	var tasks []TaskInfo
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".md") {
+			continue
+		}
+
+		info, err := file.Info()
+		if err != nil {
+			continue
+		}
+
+		path := filepath.Join(s.workspace.TasksDir(), file.Name())
+		status := readTaskStatusFromFile(path)
+		tasks = append(tasks, TaskInfo{
+			Slug:     strings.TrimSuffix(file.Name(), ".md"),
+			Path:     path,
+			Status:   status,
+			Modified: info.ModTime(),
+		})
+	}
+
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].Modified.After(tasks[j].Modified)
+	})
+
+	return ListResult{Tasks: tasks}, nil
+}
+
+func ParseStatus(status string) (TaskStatus, error) {
+	candidate := TaskStatus(strings.ToUpper(status))
+	for _, valid := range ValidStatuses() {
+		if candidate == valid {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrInvalidStatus, status)
+}
+
+func ValidStatuses() []TaskStatus {
+	return []TaskStatus{StatusPending, StatusInProgress, StatusReadyForReview, StatusChangesRequested, StatusDone}
+}
+
+func (s Store) findTaskFile(slug string) (string, error) {
+	if strings.TrimSpace(slug) == "" {
+		return "", fmt.Errorf("%w: %s", ErrTaskNotFound, slug)
+	}
+
+	if err := s.workspace.EnsureTasksDir(); err != nil {
+		return "", err
+	}
+
+	files, err := os.ReadDir(s.workspace.TasksDir())
+	if err != nil {
+		return "", fmt.Errorf("read tasks directory: %w", err)
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
+			baseName := strings.TrimSuffix(file.Name(), ".md")
+			if baseName == slug {
+				return file.Name(), nil
+			}
+		}
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
+			baseName := strings.TrimSuffix(file.Name(), ".md")
+			if strings.Contains(baseName, slug) {
+				return file.Name(), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("%w: %s", ErrTaskNotFound, slug)
+}
+
+func createTaskContent(slug string) string {
+	return fmt.Sprintf(`# %s
 
 ## Description
 
@@ -51,13 +263,66 @@ PENDING
 
 ---
 `, slug)
+}
 
-	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+func readTaskStatusFromFile(path string) TaskStatus {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return StatusUnknown
+	}
+
+	status, err := readTaskStatus(string(content))
+	if err != nil {
+		return StatusUnknown
+	}
+	return status
+}
+
+func readTaskStatus(content string) (TaskStatus, error) {
+	body, ok := document.SectionBody(content, "## Status")
+	if !ok {
+		return StatusUnknown, ErrStatusMissing
+	}
+
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || trimmed == "---" {
+			continue
+		}
+		return TaskStatus(trimmed), nil
+	}
+
+	return StatusUnknown, ErrStatusMissing
+}
+
+func Create(slug string) {
+	var buf strings.Builder
+	CreateTo(slug, &buf)
+	fmt.Print(buf.String())
+}
+
+func CreateTo(slug string, w io.Writer) {
+	store, err := NewDefaultStore()
+	if err != nil {
 		fmt.Fprintf(w, "Error creating task file: %v\n", err)
 		return
 	}
 
-	fmt.Fprintf(w, "Created task file: %s\n", filename)
+	result, err := store.Create(slug)
+	if err != nil {
+		if errors.Is(err, ErrTaskExists) {
+			fmt.Fprintf(w, "Error: Task file already exists: %s.md\n", result.Slug)
+			return
+		}
+		fmt.Fprintf(w, "Error creating task file: %v\n", err)
+		return
+	}
+
+	WriteCreateResult(w, result)
+}
+
+func WriteCreateResult(w io.Writer, result CreateResult) {
+	fmt.Fprintf(w, "Created task file: %s.md\n", result.Slug)
 	fmt.Fprintln(w, "Edit the file to add description, acceptance criteria, and constraints")
 	fmt.Fprintln(w, "Use 'bots task update <slug> IN_PROGRESS' to start working")
 }
@@ -69,67 +334,51 @@ func Read(slug string) {
 }
 
 func ReadTo(slug string, w io.Writer) {
-	tasksDir := getTasksDir()
-	filename := findTaskFile(slug)
-
-	if filename == "" {
-		fmt.Fprintf(w, "No task file found for slug: %s\n", slug)
-		fmt.Fprintln(w, "Use 'bots task list' to see available tasks")
-		return
-	}
-
-	fp := filepath.Join(tasksDir, filename)
-	content, err := os.ReadFile(fp)
+	store, err := NewDefaultStore()
 	if err != nil {
 		fmt.Fprintf(w, "Error reading task file: %v\n", err)
 		return
 	}
 
-	fmt.Fprintln(w, string(content))
+	result, err := store.Read(slug)
+	if err != nil {
+		if errors.Is(err, ErrTaskNotFound) {
+			fmt.Fprintf(w, "No task file found for slug: %s\n", slug)
+			fmt.Fprintln(w, "Use 'bots task list' to see available tasks")
+			return
+		}
+		fmt.Fprintf(w, "Error reading task file: %v\n", err)
+		return
+	}
+
+	WriteReadResult(w, result)
+}
+
+func WriteReadResult(w io.Writer, result ReadResult) {
+	fmt.Fprint(w, result.Content)
+	if !strings.HasSuffix(result.Content, "\n") {
+		fmt.Fprintln(w)
+	}
 }
 
 func Status(slug string) {
-	tasksDir := getTasksDir()
-	filename := findTaskFile(slug)
-
-	if filename == "" {
-		fmt.Fprintf(os.Stderr, "No task file found for slug: %s\n", slug)
-		os.Exit(1)
-	}
-
-	fp := filepath.Join(tasksDir, filename)
-	content, err := os.ReadFile(fp)
+	store, err := NewDefaultStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading task file: %v\n", err)
 		os.Exit(1)
 	}
 
-	lines := strings.Split(string(content), "\n")
-	inStatusSection := false
-	statusFound := false
-
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "## Status" {
-			inStatusSection = true
-			continue
+	result, err := store.Status(slug)
+	if err != nil {
+		if errors.Is(err, ErrTaskNotFound) {
+			fmt.Fprintf(os.Stderr, "No task file found for slug: %s\n", slug)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error reading task file: %v\n", err)
 		}
-
-		if inStatusSection {
-			if strings.HasPrefix(line, "## ") {
-				break
-			}
-			trimmed := strings.TrimSpace(line)
-			if trimmed != "" && trimmed != "---" {
-				fmt.Printf("Task %s: %s\n", slug, trimmed)
-				statusFound = true
-				break
-			}
-		}
+		os.Exit(1)
 	}
 
-	if !statusFound {
-		fmt.Printf("Task %s: Status not found\n", slug)
-	}
+	fmt.Printf("Task %s: %s\n", slug, result.Status)
 }
 
 func UpdateStatus(slug string, newStatus string) {
@@ -139,112 +388,40 @@ func UpdateStatus(slug string, newStatus string) {
 }
 
 func UpdateStatusTo(slug string, newStatus string, w io.Writer) {
-	tasksDir := getTasksDir()
-	filename := findTaskFile(slug)
-
-	if filename == "" {
-		fmt.Fprintf(w, "No task file found for slug: %s\n", slug)
-		return
-	}
-
-	validStatuses := []string{"PENDING", "IN_PROGRESS", "READY_FOR_REVIEW", "CHANGES_REQUESTED", "DONE"}
-	valid := false
-	for _, validStatus := range validStatuses {
-		if strings.ToUpper(newStatus) == validStatus {
-			valid = true
-			newStatus = validStatus
-			break
-		}
-	}
-
-	if !valid {
-		fmt.Fprintf(w, "Invalid status: %s\n", newStatus)
-		fmt.Fprintf(w, "Valid statuses: %s\n", strings.Join(validStatuses, ", "))
-		return
-	}
-
-	fp := filepath.Join(tasksDir, filename)
-	content, err := os.ReadFile(fp)
+	store, err := NewDefaultStore()
 	if err != nil {
 		fmt.Fprintf(w, "Error reading task file: %v\n", err)
 		return
 	}
 
-	lines := strings.Split(string(content), "\n")
-	var newLines []string
-	inStatusSection := false
-	statusReplaced := false
-
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "## Status" {
-			inStatusSection = true
-			newLines = append(newLines, line)
-			continue
+	result, err := store.UpdateStatus(slug, newStatus)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrTaskNotFound):
+			fmt.Fprintf(w, "No task file found for slug: %s\n", slug)
+		case errors.Is(err, ErrInvalidStatus):
+			fmt.Fprintf(w, "Invalid status: %s\n", newStatus)
+			fmt.Fprintf(w, "Valid statuses: %s\n", strings.Join(statusStrings(ValidStatuses()), ", "))
+		default:
+			fmt.Fprintf(w, "Error writing task file: %v\n", err)
 		}
-
-		if inStatusSection {
-			if strings.HasPrefix(line, "## ") || strings.TrimSpace(line) == "---" {
-				if !statusReplaced {
-					newLines = append(newLines, newStatus)
-					newLines = append(newLines, "")
-					newLines = append(newLines, "---")
-					statusReplaced = true
-				}
-				inStatusSection = false
-				if strings.TrimSpace(line) != "---" {
-					newLines = append(newLines, line)
-				}
-				continue
-			}
-
-			if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "---") {
-				continue
-			}
-		}
-
-		if i == len(lines)-1 && inStatusSection && !statusReplaced {
-			newLines = append(newLines, newStatus)
-			newLines = append(newLines, "")
-			newLines = append(newLines, "---")
-			statusReplaced = true
-			break
-		}
-
-		if !inStatusSection || strings.HasPrefix(line, "## ") {
-			newLines = append(newLines, line)
-		}
-	}
-
-	if !statusReplaced {
-		for i, line := range newLines {
-			if strings.TrimSpace(line) == "## Status" && i+1 < len(newLines) {
-				newLines = append(newLines[:i+1], append([]string{newStatus, "", "---"}, newLines[i+1:]...)...)
-				statusReplaced = true
-				break
-			}
-		}
-	}
-
-	if !statusReplaced {
-		fmt.Fprintln(w, "Could not find status section in task file")
 		return
 	}
 
-	if err := os.WriteFile(fp, []byte(strings.Join(newLines, "\n")), 0644); err != nil {
-		fmt.Fprintf(w, "Error writing task file: %v\n", err)
-		return
-	}
+	WriteUpdateStatusResult(w, result)
+}
 
-	fmt.Fprintf(w, "Updated task %s status to: %s\n", slug, newStatus)
+func WriteUpdateStatusResult(w io.Writer, result UpdateStatusResult) {
+	fmt.Fprintf(w, "Updated task %s status to: %s\n", result.Slug, result.Status)
 
-	switch newStatus {
-	case "IN_PROGRESS":
+	switch result.Status {
+	case StatusInProgress:
 		fmt.Fprintln(w, "Task started. Remember to log decisions with 'bots log append'")
-	case "READY_FOR_REVIEW":
+	case StatusReadyForReview:
 		fmt.Fprintln(w, "Task ready for review. Master model will review and update status.")
-	case "DONE":
+	case StatusDone:
 		fmt.Fprintln(w, "Task completed and approved!")
-	case "CHANGES_REQUESTED":
+	case StatusChangesRequested:
 		fmt.Fprintln(w, "Changes requested. Address feedback and mark READY_FOR_REVIEW when done.")
 	}
 }
@@ -256,154 +433,57 @@ func List() {
 }
 
 func ListTo(w io.Writer) {
-	tasksDir := getTasksDir()
-	files, err := os.ReadDir(tasksDir)
+	store, err := NewDefaultStore()
 	if err != nil {
 		fmt.Fprintf(w, "Error reading tasks directory: %v\n", err)
 		return
 	}
 
-	type TaskInfo struct {
-		Slug     string
-		Status   string
-		Modified time.Time
+	result, err := store.List()
+	if err != nil {
+		fmt.Fprintf(w, "Error reading tasks directory: %v\n", err)
+		return
 	}
 
-	var tasks []TaskInfo
+	WriteListResult(w, result)
+}
 
-	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
-			slug := strings.TrimSuffix(file.Name(), ".md")
-			info, err := file.Info()
-			if err != nil {
-				continue
-			}
-
-			status := readTaskStatus(filepath.Join(tasksDir, file.Name()))
-			tasks = append(tasks, TaskInfo{
-				Slug:     slug,
-				Status:   status,
-				Modified: info.ModTime(),
-			})
-		}
-	}
-
-	if len(tasks) == 0 {
+func WriteListResult(w io.Writer, result ListResult) {
+	if len(result.Tasks) == 0 {
 		fmt.Fprintln(w, "No task files found")
 		fmt.Fprintln(w, "Use 'bots task create <slug>' to create one")
 		return
 	}
 
-	sort.Slice(tasks, func(i, j int) bool {
-		return tasks[i].Modified.After(tasks[j].Modified)
-	})
-
 	fmt.Fprintln(w, "Task files:")
-	for _, task := range tasks {
-		statusIcon := getStatusIcon(task.Status)
-		fmt.Fprintf(w, "  %s %s (%s)\n", statusIcon, task.Slug, task.Modified.Format("2006-01-02"))
+	for _, task := range result.Tasks {
+		fmt.Fprintf(w, "  %s %s (%s)\n", getStatusIcon(task.Status), task.Slug, task.Modified.Format("2006-01-02"))
 	}
 }
 
-func getTasksDir() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	for {
-		botsDir := filepath.Join(dir, ".bots")
-		tasksDir := filepath.Join(botsDir, "tasks")
-		if _, err := os.Stat(tasksDir); err == nil {
-			return tasksDir
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			defaultTasksDir := ".bots/tasks"
-			if err := os.MkdirAll(defaultTasksDir, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating tasks directory: %v\n", err)
-				os.Exit(1)
-			}
-			return defaultTasksDir
-		}
-		dir = parent
-	}
-}
-
-func findTaskFile(slug string) string {
-	tasksDir := getTasksDir()
-	files, err := os.ReadDir(tasksDir)
-	if err != nil {
-		return ""
-	}
-
-	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
-			baseName := strings.TrimSuffix(file.Name(), ".md")
-			if baseName == slug {
-				return file.Name()
-			}
-		}
-	}
-
-	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".md") {
-			baseName := strings.TrimSuffix(file.Name(), ".md")
-			if strings.Contains(baseName, slug) {
-				return file.Name()
-			}
-		}
-	}
-
-	return ""
-}
-
-func readTaskStatus(fp string) string {
-	content, err := os.ReadFile(fp)
-	if err != nil {
-		return "UNKNOWN"
-	}
-
-	lines := strings.Split(string(content), "\n")
-	inStatusSection := false
-
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "## Status" {
-			inStatusSection = true
-			continue
-		}
-
-		if inStatusSection {
-			if strings.HasPrefix(line, "## ") || strings.TrimSpace(line) == "---" {
-				break
-			}
-			trimmed := strings.TrimSpace(line)
-			if trimmed != "" {
-				return trimmed
-			}
-		}
-	}
-
-	return "UNKNOWN"
-}
-
-func getStatusIcon(status string) string {
+func getStatusIcon(status TaskStatus) string {
 	switch status {
-	case "PENDING":
+	case StatusPending:
 		return "○"
-	case "IN_PROGRESS":
+	case StatusInProgress:
 		return "◐"
-	case "READY_FOR_REVIEW":
+	case StatusReadyForReview:
 		return "●"
-	case "CHANGES_REQUESTED":
+	case StatusChangesRequested:
 		return "▲"
-	case "DONE":
+	case StatusDone:
 		return "✓"
 	default:
 		return "?"
 	}
+}
+
+func statusStrings(statuses []TaskStatus) []string {
+	out := make([]string, len(statuses))
+	for i, status := range statuses {
+		out[i] = string(status)
+	}
+	return out
 }
 
 var slugRegex = regexp.MustCompile(`[^a-z0-9._-]`)
